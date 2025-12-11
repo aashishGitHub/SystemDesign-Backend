@@ -1,0 +1,135 @@
+.container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.statusSection {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.indicator {
+  position: relative;
+}
+
+.dot {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  transition: background-color 0.3s ease;
+}
+
+.dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  opacity: 0.3;
+}
+
+.connected .dot {
+  background: var(--success);
+  box-shadow: 0 0 10px var(--success);
+}
+
+.connected .dot::after {
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+
+.connecting .dot {
+  background: var(--warning);
+  animation: pulse 1s infinite;
+}
+
+.connecting .dot::after {
+  background: var(--warning);
+}
+
+.disconnected .dot {
+  background: var(--text-muted);
+}
+
+.error .dot {
+  background: var(--error);
+  box-shadow: 0 0 10px var(--error);
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.clientId {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.attempts {
+  font-size: 0.75rem;
+  color: var(--warning);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.connectButton,
+.disconnectButton {
+  padding: 0.6rem 1.25rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.connectButton {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.connectButton:hover:not(:disabled) {
+  background: var(--accent-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px var(--accent-glow);
+}
+
+.connectButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.disconnectButton {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.disconnectButton:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
