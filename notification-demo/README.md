@@ -1,3 +1,10 @@
+Syllabus
+
+polling - short and long
+how do we implement short and long polling ? whats is the difference? 
+
+
+
 # SSE Notification Demo
 
 A demonstration of **Server-Sent Events (SSE)** for real-time notifications using:
@@ -130,16 +137,32 @@ curl -X POST http://localhost:8080/send \
 curl http://localhost:8080/health
 ```
 
-## SSE vs WebSocket vs Polling
+## SSE vs Long Polling vs WebSocket
 
-| Feature | SSE | WebSocket | Polling |
-|---------|-----|-----------|---------|
-| Direction | Server → Client | Bidirectional | Client → Server |
-| Protocol | HTTP | WS/WSS | HTTP |
-| Reconnection | Built-in | Manual | N/A |
+| Feature | SSE | Long Polling | WebSocket |
+|---------|-----|--------------|-----------|
+| Direction | Server → Client | Client → Server (pull) | Bidirectional |
+| Protocol | HTTP | HTTP | WS/WSS |
+| Connection | Persistent | Request per message | Persistent |
+| Reconnection | Built-in | Manual | Manual |
 | Binary data | No | Yes | Yes |
-| Complexity | Low | Medium | Low |
-| Best for | Notifications, feeds | Chat, gaming | Legacy systems |
+| Complexity | Low | Medium | High |
+| Efficiency | High | Medium | Very High |
+| Best for | Notifications, feeds | Legacy compatibility | Chat, gaming |
+
+## When to Use SSE?
+
+✅ **Use SSE When:**
+- Need **server → client** push only
+- Building **notifications**, **live feeds**, **dashboards**
+- Want **built-in reconnection**
+- Using **modern browsers**
+- Want **simpler** than WebSocket
+
+❌ **Don't Use SSE When:**
+- Need **bidirectional** communication → Use **WebSocket**
+- Need to support **old browsers** → Use **Long Polling**
+- Need **binary data** → Use **WebSocket**
 
 ## Next Steps
 
@@ -148,4 +171,5 @@ curl http://localhost:8080/health
 3. Integrate with AWS SQS/SNS for backend events
 4. Add Service Worker for Web Push notifications
 5. Deploy to AWS (API Gateway, Lambda, or ECS)
+
 
