@@ -1,0 +1,117 @@
+.app {
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.header h1 {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, #00d4ff 0%, #0066ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.subtitle {
+  color: #888;
+  font-size: 1.1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.infoBox {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 102, 255, 0.1) 100%);
+  border: 2px solid rgba(0, 212, 255, 0.3);
+  border-radius: 12px;
+  padding: 2rem;
+  margin-top: 2rem;
+}
+
+.infoBox h3 {
+  margin-bottom: 1.5rem;
+  color: #00d4ff;
+  font-size: 1.5rem;
+}
+
+.goFeatures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.feature {
+  background: rgba(0, 212, 255, 0.05);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+.feature h4 {
+  color: #00d4ff;
+  margin-bottom: 0.5rem;
+  font-size: 1.1rem;
+}
+
+.feature p {
+  color: #ccc;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.comparison {
+  margin-top: 2rem;
+}
+
+.comparison h4 {
+  color: #00d4ff;
+  margin-bottom: 1rem;
+  font-size: 1.2rem;
+}
+
+.comparisonTable {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.comparisonTable th,
+.comparisonTable td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.comparisonTable th {
+  background: rgba(0, 212, 255, 0.1);
+  color: #00d4ff;
+  font-weight: 600;
+}
+
+.comparisonTable tbody tr:hover {
+  background: rgba(0, 212, 255, 0.05);
+}
+
+.comparisonTable tbody tr:last-child td {
+  border-bottom: none;
+}
+

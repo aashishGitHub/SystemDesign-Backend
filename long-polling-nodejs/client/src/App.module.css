@@ -1,0 +1,94 @@
+.app {
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.header h1 {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.subtitle {
+  color: #888;
+  font-size: 1.1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.infoBox {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  border: 2px solid rgba(102, 126, 234, 0.3);
+  border-radius: 12px;
+  padding: 2rem;
+  margin-top: 2rem;
+}
+
+.infoBox h3 {
+  margin-bottom: 1rem;
+  color: #667eea;
+}
+
+.infoBox ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.infoBox ol li {
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+}
+
+.infoBox code {
+  background: rgba(102, 126, 234, 0.2);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+}
+
+.comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-top: 1.5rem;
+}
+
+.comparison h4 {
+  margin-bottom: 0.75rem;
+  color: #667eea;
+}
+
+.comparison ul {
+  margin-left: 1.5rem;
+}
+
+.comparison ul li {
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+}
+
+@media (max-width: 768px) {
+  .comparison {
+    grid-template-columns: 1fr;
+  }
+}
+

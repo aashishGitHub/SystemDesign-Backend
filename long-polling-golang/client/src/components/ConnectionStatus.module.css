@@ -1,0 +1,57 @@
+.container {
+  margin-bottom: 2rem;
+}
+
+.statusCard {
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.statusIndicator {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.icon {
+  font-size: 2rem;
+}
+
+.statusIndicator h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.description {
+  margin: 0.25rem 0 0 0;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.statLabel {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.statValue {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+}
+
