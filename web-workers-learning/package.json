@@ -1,0 +1,19 @@
+{
+  "name": "web-workers-learning",
+  "version": "1.0.0",
+  "description": "Learning examples for Service Workers and Web Workers",
+  "scripts": {
+    "start": "npx serve -l 8000",
+    "dev": "npx serve -l 8000"
+  },
+  "keywords": [
+    "web-workers",
+    "service-workers",
+    "pwa",
+    "javascript",
+    "learning"
+  ],
+  "author": "",
+  "license": "MIT"
+}
+

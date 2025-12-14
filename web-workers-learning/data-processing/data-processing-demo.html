@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Processing Worker - Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 10px;
+        }
+        
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            min-height: 50px;
+        }
+        
+        .loading {
+            color: #667eea;
+            font-style: italic;
+        }
+        
+        .success {
+            color: #27ae60;
+            font-weight: bold;
+        }
+        
+        .info-box {
+            background: #e8f4fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #667eea;
+        }
+        
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="../index.html" class="back-link">← Back to Hub</a>
+        
+        <h1>🧮 Data Processing Worker</h1>
+        <p>Process large datasets without blocking the UI thread</p>
+        
+        <div class="info-box">
+            <strong>🎯 What This Demonstrates:</strong><br>
+            This example shows how Web Workers can handle CPU-intensive calculations
+            without freezing the browser. Try clicking buttons rapidly while processing!
+        </div>
+        
+        <!-- Demo 1: Prime Number Calculation -->
+        <div class="demo-section">
+            <h3>Demo 1: Calculate Prime Numbers</h3>
+            <p>Calculate prime numbers up to a large number (CPU intensive)</p>
+            <button id="calcPrimesBtn">Calculate Primes up to 100,000</button>
+            <button id="testUIBtn">Test UI (Click me!)</button>
+            <div class="result" id="primeResult">Results will appear here...</div>
+        </div>
+        
+        <!-- Demo 2: Array Processing -->
+        <div class="demo-section">
+            <h3>Demo 2: Process Large Array</h3>
+            <p>Sort and analyze 1 million random numbers</p>
+            <button id="processArrayBtn">Process 1M Numbers</button>
+            <div class="result" id="arrayResult">Results will appear here...</div>
+        </div>
+        
+        <!-- Demo 3: Data Aggregation -->
+        <div class="demo-section">
+            <h3>Demo 3: Aggregate Data</h3>
+            <p>Simulate processing a large dataset with grouping and statistics</p>
+            <button id="aggregateBtn">Aggregate 100K Records</button>
+            <div class="result" id="aggregateResult">Results will appear here...</div>
+        </div>
+        
+        <div class="info-box">
+            <strong>💡 Key Learning:</strong><br>
+            • Workers run in a separate thread (no UI blocking)<br>
+            • Communication via <code>postMessage()</code><br>
+            • Workers can't access DOM directly<br>
+            • Perfect for CPU-intensive tasks
+        </div>
+    </div>
+    
+    <script>
+        // Check if Web Workers are supported
+        if (!window.Worker) {
+            alert('Web Workers are not supported in your browser!');
+        }
+        
+        // Create a new worker
+        const worker = new Worker('data-worker.js');
+        
+        // Counter for UI test
+        let clickCount = 0;
+        
+        // UI test button - proves UI remains responsive
+        document.getElementById('testUIBtn').addEventListener('click', () => {
+            clickCount++;
+            document.getElementById('primeResult').innerHTML = 
+                `<span class="success">UI is responsive! Clicked ${clickCount} times</span>`;
+        });
+        
+        // Demo 1: Calculate primes
+        document.getElementById('calcPrimesBtn').addEventListener('click', () => {
+            const btn = document.getElementById('calcPrimesBtn');
+            btn.disabled = true;
+            document.getElementById('primeResult').innerHTML = 
+                '<span class="loading">⏳ Calculating primes... (UI is still responsive!)</span>';
+            
+            const startTime = performance.now();
+            
+            // Send message to worker
+            worker.postMessage({
+                type: 'CALCULATE_PRIMES',
+                limit: 100000
+            });
+        });
+        
+        // Demo 2: Process large array
+        document.getElementById('processArrayBtn').addEventListener('click', () => {
+            const btn = document.getElementById('processArrayBtn');
+            btn.disabled = true;
+            document.getElementById('arrayResult').innerHTML = 
+                '<span class="loading">⏳ Processing array... (try clicking other buttons!)</span>';
+            
+            worker.postMessage({
+                type: 'PROCESS_ARRAY',
+                size: 1000000
+            });
+        });
+        
+        // Demo 3: Aggregate data
+        document.getElementById('aggregateBtn').addEventListener('click', () => {
+            const btn = document.getElementById('aggregateBtn');
+            btn.disabled = true;
+            document.getElementById('aggregateResult').innerHTML = 
+                '<span class="loading">⏳ Aggregating data...</span>';
+            
+            worker.postMessage({
+                type: 'AGGREGATE_DATA',
+                records: 100000
+            });
+        });
+        
+        // Listen for messages from worker
+        worker.onmessage = (e) => {
+            const { type, data, time } = e.data;
+            
+            switch(type) {
+                case 'PRIMES_RESULT':
+                    document.getElementById('primeResult').innerHTML = `
+                        <div class="success">✅ Found ${data.count} prime numbers!</div>
+                        <div>First 10: ${data.primes.slice(0, 10).join(', ')}...</div>
+                        <div>Last 10: ...${data.primes.slice(-10).join(', ')}</div>
+                        <div><small>Time taken: ${time}ms</small></div>
+                    `;
+                    document.getElementById('calcPrimesBtn').disabled = false;
+                    break;
+                    
+                case 'ARRAY_RESULT':
+                    document.getElementById('arrayResult').innerHTML = `
+                        <div class="success">✅ Array processed!</div>
+                        <div>Min: ${data.min} | Max: ${data.max} | Average: ${data.avg}</div>
+                        <div>Median: ${data.median} | Sum: ${data.sum.toLocaleString()}</div>
+                        <div><small>Time taken: ${time}ms</small></div>
+                    `;
+                    document.getElementById('processArrayBtn').disabled = false;
+                    break;
+                    
+                case 'AGGREGATE_RESULT':
+                    document.getElementById('aggregateResult').innerHTML = `
+                        <div class="success">✅ Data aggregated!</div>
+                        <div>Categories: ${data.categories}</div>
+                        <div>Total Revenue: $${data.totalRevenue.toLocaleString()}</div>
+                        <div>Average Transaction: $${data.avgTransaction.toFixed(2)}</div>
+                        <div>Top Category: ${data.topCategory} (${data.topCategoryCount} items)</div>
+                        <div><small>Time taken: ${time}ms</small></div>
+                    `;
+                    document.getElementById('aggregateBtn').disabled = false;
+                    break;
+            }
+        };
+        
+        // Handle worker errors
+        worker.onerror = (error) => {
+            console.error('Worker error:', error);
+            alert('Worker error: ' + error.message);
+        };
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload Worker - Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #4facfe;
+            margin-bottom: 10px;
+        }
+        
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #4facfe;
+            text-decoration: none;
+        }
+        
+        .upload-section {
+            margin: 30px 0;
+            padding: 30px;
+            background: #f9f9f9;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .drop-zone {
+            border: 3px dashed #4facfe;
+            border-radius: 10px;
+            padding: 50px;
+            margin: 20px 0;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .drop-zone:hover, .drop-zone.dragover {
+            background: #e8f7ff;
+            border-color: #00f2fe;
+        }
+        
+        .drop-zone-icon {
+            font-size: 4em;
+            margin-bottom: 15px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        button {
+            background: #4facfe;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: all 0.3s;
+        }
+        
+        button:hover:not(:disabled) {
+            background: #3a8fd5;
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .file-info {
+            margin: 20px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            text-align: left;
+        }
+        
+        .file-info h3 {
+            color: #4facfe;
+            margin-bottom: 10px;
+        }
+        
+        .progress-container {
+            margin: 20px 0;
+            display: none;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .chunk-info {
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .log-container {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f4f4f4;
+            border-radius: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            display: none;
+        }
+        
+        .log-entry {
+            padding: 3px 0;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        
+        .info-box {
+            background: #e8f7ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #4facfe;
+        }
+        
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="../index.html" class="back-link">← Back to Hub</a>
+        
+        <h1>📤 File Upload Worker</h1>
+        <p>Upload large files with chunking and progress tracking</p>
+        
+        <div class="info-box">
+            <strong>🎯 What This Demonstrates:</strong><br>
+            This example shows how to use Web Workers to process large file uploads
+            by splitting them into chunks. The worker handles the chunking logic,
+            computes checksums, and simulates uploads without blocking the UI.
+        </div>
+        
+        <div class="upload-section">
+            <div class="drop-zone" id="dropZone">
+                <div class="drop-zone-icon">📁</div>
+                <h3>Drop files here or click to browse</h3>
+                <p>Any file type, any size (demo works client-side)</p>
+            </div>
+            <input type="file" id="fileInput" multiple>
+        </div>
+        
+        <div class="file-info" id="fileInfo" style="display: none;">
+            <h3>File Information</h3>
+            <div id="fileDetails"></div>
+            <button id="uploadBtn" onclick="startUpload()">📤 Start Upload</button>
+            <button onclick="cancelUpload()">❌ Cancel</button>
+        </div>
+        
+        <div class="progress-container" id="progressContainer">
+            <h3>Upload Progress</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+            <div class="chunk-info" id="chunkInfo"></div>
+        </div>
+        
+        <div class="success" id="successMessage">
+            ✅ Upload completed successfully!
+        </div>
+        
+        <div class="log-container" id="logContainer">
+            <h4>Upload Log</h4>
+        </div>
+        
+        <div class="info-box">
+            <strong>💡 How It Works:</strong><br>
+            1. File is selected by user<br>
+            2. Worker splits file into chunks (1MB each)<br>
+            3. Each chunk is processed and "uploaded" (simulated)<br>
+            4. Worker computes MD5 hash for integrity<br>
+            5. Progress updates in real-time<br>
+            6. Main thread stays responsive!
+        </div>
+    </div>
+    
+    <script>
+        let worker = null;
+        let selectedFile = null;
+        
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileDetails = document.getElementById('fileDetails');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const chunkInfo = document.getElementById('chunkInfo');
+        const logContainer = document.getElementById('logContainer');
+        const successMessage = document.getElementById('successMessage');
+        
+        // Initialize worker
+        function initWorker() {
+            if (worker) {
+                worker.terminate();
+            }
+            
+            worker = new Worker('upload-worker.js');
+            
+            worker.onmessage = function(e) {
+                const { type, data } = e.data;
+                
+                switch(type) {
+                    case 'PROGRESS':
+                        updateProgress(data);
+                        break;
+                    case 'CHUNK_UPLOADED':
+                        logMessage(`✅ Chunk ${data.chunkIndex + 1} uploaded (${data.size} bytes)`);
+                        break;
+                    case 'COMPLETE':
+                        uploadComplete(data);
+                        break;
+                    case 'ERROR':
+                        uploadError(data);
+                        break;
+                    case 'LOG':
+                        logMessage(data.message);
+                        break;
+                }
+            };
+            
+            worker.onerror = function(error) {
+                console.error('Worker error:', error);
+                logMessage('❌ Worker error: ' + error.message);
+            };
+        }
+        
+        // Drop zone events
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFileSelect(files[0]);
+            }
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+        
+        function handleFileSelect(file) {
+            selectedFile = file;
+            
+            // Display file info
+            fileDetails.innerHTML = `
+                <strong>Name:</strong> ${file.name}<br>
+                <strong>Size:</strong> ${formatBytes(file.size)}<br>
+                <strong>Type:</strong> ${file.type || 'Unknown'}<br>
+                <strong>Last Modified:</strong> ${new Date(file.lastModified).toLocaleString()}
+            `;
+            
+            fileInfo.style.display = 'block';
+            progressContainer.style.display = 'none';
+            successMessage.style.display = 'none';
+            logContainer.style.display = 'none';
+            logContainer.innerHTML = '<h4>Upload Log</h4>';
+        }
+        
+        function startUpload() {
+            if (!selectedFile) return;
+            
+            initWorker();
+            
+            document.getElementById('uploadBtn').disabled = true;
+            progressContainer.style.display = 'block';
+            logContainer.style.display = 'block';
+            successMessage.style.display = 'none';
+            
+            logMessage('🚀 Starting upload...');
+            logMessage(`📊 File size: ${formatBytes(selectedFile.size)}`);
+            
+            // Send file to worker
+            worker.postMessage({
+                type: 'UPLOAD_FILE',
+                file: selectedFile,
+                chunkSize: 1024 * 1024 // 1MB chunks
+            });
+        }
+        
+        function cancelUpload() {
+            if (worker) {
+                worker.terminate();
+                worker = null;
+            }
+            
+            document.getElementById('uploadBtn').disabled = false;
+            progressContainer.style.display = 'none';
+            logMessage('❌ Upload cancelled');
+        }
+        
+        function updateProgress(data) {
+            const percent = Math.round(data.percent);
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = percent + '%';
+            
+            chunkInfo.innerHTML = `
+                Chunk ${data.currentChunk} of ${data.totalChunks} | 
+                ${formatBytes(data.uploadedBytes)} / ${formatBytes(data.totalBytes)} uploaded
+            `;
+        }
+        
+        function uploadComplete(data) {
+            progressFill.style.width = '100%';
+            progressFill.textContent = '100%';
+            
+            successMessage.style.display = 'block';
+            document.getElementById('uploadBtn').disabled = false;
+            
+            logMessage('✅ Upload completed!');
+            logMessage(`⏱️ Total time: ${data.totalTime}ms`);
+            logMessage(`🔒 File hash: ${data.fileHash}`);
+            logMessage(`📦 Total chunks: ${data.totalChunks}`);
+        }
+        
+        function uploadError(data) {
+            logMessage('❌ Error: ' + data.message);
+            document.getElementById('uploadBtn').disabled = false;
+        }
+        
+        function logMessage(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+    </script>
+</body>
+</html>
+
