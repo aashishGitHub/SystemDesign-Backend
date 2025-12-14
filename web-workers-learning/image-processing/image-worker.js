@@ -216,3 +216,4 @@ function applyEdgeDetection(imageData) {
     return imageData;
 }
 
+

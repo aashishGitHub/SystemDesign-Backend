@@ -174,3 +174,4 @@ function aggregateData(recordCount) {
 // Log that worker is ready
 console.log('🔧 Data Worker initialized and ready!');
 
+
