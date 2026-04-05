@@ -66,31 +66,49 @@ A **multi-model data service** solves this by exposing **one logical API** that 
 2. **Bounded query latency** — pure document reads < 10ms p99, pure graph traversals < 50ms p99, hybrid queries < 200ms p99.
 3. **Tenant isolation** — one tenant's data must never leak to another; row-level enforcement in both engines, scoped encryption keys.
 
-*ELABORATE THE SAME*
+#### Why p99 and Not Average?
 
-Why p99 and not average?
-Averages hide outliers. If 99 requests take 5ms and 1 request takes 10 seconds, the average is ~105ms — looks fine. But that 1 user waited 10 seconds.
+**The Core Problem with Averages:**
 
-In production, you care about the experience of almost all users (p99), not the average. A high p99 indicates a tail latency problem that needs fixing.
+Averages are mathematically misleading. They hide outliers completely.
 
-Example: 100 requests sorted by latency
+**Concrete Example:**
+- 99 requests complete in 5ms each = 495ms total
+- 1 request takes 10 seconds (10,000ms)
+- **Total = 10,495ms**
+- **Average = 10,495ms ÷ 100 = ~105ms** ← looks acceptable!
+- **But: 1% of users experienced a 10-second wait** ← unacceptable UX
 
-p50 (median):  the 50th fastest  → "typical" user experience
-p95:           the 95th fastest  → most users
-p99:           the 99th fastest  → almost all users
-p99.9:         the 999th of 1000 → tail latency (Amazon tracks this)
+In production, you care about almost every user's experience (p99), not the mathematical average. A high p99 indicates a tail latency problem that needs architectural fixing (likely a supernode, a hot partition, or an inefficient query plan).
 
-Request latencies (sorted):
-  1ms, 2ms, 3ms, ... 8ms, 9ms, 50ms, 200ms
-                            ↑           ↑
-                          p99=9ms    max=200ms
+**Percentile Breakdown (Understanding the Distribution):**
 
-Why these specific numbers?
-- 10ms for documents — a key-value lookup from an indexed store (or cache hit) should be near-instant
+For 100 requests sorted by latency:
 
-- 50ms for graph traversals — walking edges across partitions involves multiple hops, so 5x the document read budget
-- 200ms for hybrid — includes traversal time + batch document fetch + join + sort, so the combined budget is larger
-In interviews, stating p99 targets (not averages) signals you understand production SLA thinking.
+| Percentile | Meaning | Count |
+|---|---|---|
+| **p50 (median)** | 50th fastest request | 1 in 2 requests |
+| **p95** | 95th fastest request | 19 in 20 requests |
+| **p99** | 99th fastest request | Nearly all users |
+| **p99.9** | 999th of 1000 fastest | Only the worst outliers |
+
+**Example distribution:**
+```
+Requests sorted by latency:
+1ms, 2ms, 3ms, … 8ms, 9ms (p99), 50ms (p99.9), 200ms (max)
+                      ↑                ↑           ↑
+                    p99          tail latency    worst case
+```
+
+**Why These Specific Thresholds in This Design?**
+
+- **10ms for document reads** — single key-value lookup from an indexed store or cache hit. Network latency + disk I/O for remote store ≤ 10ms is reasonable.
+- **50ms for graph traversals** — walking N edges across partitions involves multiple hops and potential cross-partition calls. 5× the document read budget accounts for traversal depth.
+- **200ms for hybrid queries** — includes traversal (50ms) + batch document multiget (10ms) + join logic (5ms) + sort + paginate. The full end-to-end budget is larger because of composition.
+
+**Interview Signal:**
+
+Stating p99 targets (not p50 or average) signals you understand **SLA thinking** and **production operations**. You're optimizing for the user experience of almost everyone, not just the average.
 
 ### ❌ Below the Line (non-functional)
 
@@ -181,8 +199,10 @@ One database cluster handles both document and graph storage.
 
 Document store (MongoDB, DynamoDB, PostgreSQL JSONB) + Graph store (Neo4j, Neptune, Dgraph, JanusGraph) behind a single service that hides the split.
 
-| **Strengths** | Best-of-breed for each pattern, independent scaling (scale graph reads without touching document store), freedom to swap engines |
-| **Weaknesses** | Two clusters to operate, eventual consistency between them, more complex write path (outbox pattern required), integration testing is harder |
+| **Strengths** | Best-of-breed for each pattern, independent scaling (scale graph reads without touching document store), freedom to swap engines 
+
+| **Weaknesses** | Two clusters to operate, eventual consistency between them, more complex write path (outbox pattern required), integration testing is harder 
+
 | **When to choose** | Large-scale products with heavy traversal AND heavy document reads, teams with platform engineering support |
 
 ### Grill Yourself — Key Questions:
@@ -195,6 +215,100 @@ Document store (MongoDB, DynamoDB, PostgreSQL JSONB) + Graph store (Neo4j, Neptu
 
 3. **Q: How do you handle schema differences? Documents are schema-flexible, graphs are schema-rigid (typed edges).**
    - A: The schema registry bridges both — it validates document writes against a JSON schema AND maps document types to vertex types with defined edge types. The registry is the single source of truth.
+   
+   **Elaboration — The Real Problem:**
+   
+   Documents and graphs have opposite schemas:
+   - **MongoDB User document:** `{ id, name, email, follows: [user_id1, user_id2], liked_products: [prod_id1], **hobby: "painting" }` — arbitrary extra fields are fine.
+   - **Graph User vertex:** Must have a **fixed vertex type** ("User") and **defined edge types** ("follows" edges go to User vertices, "liked" edges go to Product vertices).
+   
+   **Without a schema registry, chaos ensues:**
+   - Outbox worker reads a document with random fields → doesn't know which fields map to graph edges.
+   - One team adds a `followers` field to the User doc, another team adds `following` → graph gets conflicting edges.
+   - Graph validation fails silently → data divergence.
+   
+   **How the Schema Registry Solves This:**
+   
+   The registry is a centralized service that stores **versioned schema definitions** for each document type. Each schema entry contains:
+   
+   ```json
+   {
+     "type": "User",
+     "version": 2,
+     
+     // Part 1: Document Schema (what fields can exist)
+     "documentSchema": {
+       "type": "object",
+       "properties": {
+         "id": { "type": "string" },
+         "name": { "type": "string" },
+         "email": { "type": "string", "format": "email" },
+         "follows": { "type": "array", "items": { "type": "string" } },
+         "liked_products": { "type": "array", "items": { "type": "string" } },
+         "city": { "type": "string" },  // optional field
+         "metadata": { "type": "object" }  // flexible blob
+       },
+       "required": ["id", "name", "email"],
+       "additionalProperties": true  // allow unstructured fields
+     },
+     
+     // Part 2: Graph Mapping (which fields become edges?)
+     "graphMapping": {
+       "vertexType": "User",  // document type → graph vertex type
+       "edgeRules": [
+         {
+           "documentField": "follows",
+           "edgeType": "follows",
+           "targetVertexType": "User"
+         },
+         {
+           "documentField": "liked_products",
+           "edgeType": "liked",
+           "targetVertexType": "Product"
+         }
+       ],
+       "vertexProjection": ["id", "name", "email", "city"]  // only these go to graph
+     }
+   }
+   ```
+   
+   **The Flow — When a Document is Written:**
+   
+   ```
+   1. Client: POST /entities { type: "User", data: {...} }
+   
+   2. Service validates:
+      a. Look up "User" in schema registry (version 2)
+      b. Validate document against documentSchema
+      c. Check required fields (id, name, email)
+      d. Allow extra fields (e.g., hobby) — they stay in the document but don't go to graph
+   
+   3. Service writes document to MongoDB
+   
+   4. Service creates outbox event with the schema version
+   
+   5. Outbox worker consumes event:
+      a. Fetch schema version 2 for User type
+      b. Read graphMapping.edgeRules
+      c. For each edge rule:
+         - Extract "follows" array from document → create "follows" edges to User vertices
+         - Extract "liked_products" array → create "liked" edges to Product vertices
+      d. Project only vertexProjection fields to the graph
+      e. Upsert vertex and edges to Neo4j/Dgraph
+   ```
+   
+   **Why This Works:**
+   
+   1. **Documents stay flexible** — extra fields (e.g., "hobby") don't break anything. They stay in the document, never go to the graph.
+   2. **Graphs stay rigid** — only schema-defined fields become edges. The registry is the enforcement layer.
+   3. **No divergence** — the registry is the single source of truth. All writes, all outbox workers, all graph upserts follow the same schema version.
+   4. **Schema evolution is safe** — when you add a new edge type (e.g., "trust"), you create a new schema version, deploy the worker code for the new edge rule, then backfill old documents using the registry.
+   
+   **In an Interview:**
+   
+   Good answer: "The schema registry maps document fields to graph edges."
+   
+   Great answer: "The schema registry is a versioned central authority. For each document type, it defines (1) JSON schema for validation, (2) required fields, (3) which fields map to which edge types, and (4) which fields project to the graph vertex. During a write, the schema is validated, the document is stored flexibly, and the outbox worker reads the schema to know exactly which edges to create. This lets documents be schema-flexible while graphs stay schema-rigid."
 
 ---
 
