@@ -13,9 +13,9 @@
 | Category | Total Topics | ✅ Done | 🔄 In Progress | 🔲 Not Started |
 |---|---|---|---|---|
 | Core Patterns | 10 | 6 | 0 | 4 |
-| Classic Problems | 18 | 5 | 0 | 13 |
+| Classic Problems | 18 | 6 | 0 | 12 |
 | Advanced Topics | 6 | 0 | 0 | 6 |
-| **Total** | **34** | **11** | **0** | **23** |
+| **Total** | **34** | **12** | **0** | **22** |
 
 ---
 
@@ -443,7 +443,7 @@ Google Search has a world-class autocomplete. This tests data structures (trie),
 ---
 
 ### Problem 11 — Notification System (Push, Email, SMS)
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/notification-system/`
+**Status:** ✅ Done | **Priority:** P2 | **Folder:** `interviews/notification-system/`
 
 **What it covers:**
 Multi-channel routing (push, email, SMS, in-app). Provider abstraction (APNs, FCM, SendGrid, Twilio). Notification templating. Batching and throttling. User preference management (opt-in/out, quiet hours). Retry with exponential backoff. Notification deduplication. Priority queues (transactional vs marketing). Delivery tracking and receipts. Rate limiting per user per channel.
@@ -454,10 +454,10 @@ Multi-channel routing (push, email, SMS, in-app). Provider abstraction (APNs, FC
 Notifications are a sub-system in nearly every product. Probing notification design reveals whether a candidate understands async pipelines, reliability, and user experience tradeoffs.
 
 **Creation checklist:**
-- [ ] `README.md`
-- [ ] `questions.md`
-- [ ] `answers.md`
-- [ ] `deep-dive.md`
+- [x] `README.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `deep-dive.md`
 
 ---
 
@@ -669,7 +669,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 18 | File Storage (Drive) | Problem | P1 | ✅ | Blob Storage, Caching |
 | 19 | Web Crawler | Problem | P2 | 🔲 | Hashing, Queues |
 | 20 | Search Autocomplete | Problem | P2 | 🔲 | Caching, Hashing |
-| 21 | Notification System | Problem | P2 | 🔲 | Queues, Rate Limiting |
+| 21 | Notification System | Problem | P2 | ✅ | Queues, Rate Limiting |
 | 22 | Distributed KV Store | Problem | P2 | 🔲 | Hashing, Replication |
 | 23 | Ad Click Aggregation | Problem | P2 | 🔲 | Kafka, Stream Processing |
 | 24 | Leaderboard / Top-K | Problem | P2 | 🔲 | Caching (Redis) |

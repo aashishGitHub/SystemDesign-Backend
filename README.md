@@ -1,10 +1,11 @@
-# System Design Backend - Real-Time Communication Demos
+# System Design Backend - Real-Time Communication Demos & Interview Study
 
-A comprehensive collection of real-time communication implementations demonstrating different approaches to server-client communication.
+A comprehensive collection of real-time communication implementations and system design interview study materials targeting Senior/Staff engineers at Google, Meta, Amazon, Microsoft, and Uber.
 
 ## 📚 Table of Contents
 
 - [Overview](#overview)
+- [Interview Study Materials](#interview-study-materials)
 - [Demos](#demos)
 - [Quick Comparison](#quick-comparison)
 - [Getting Started](#getting-started)
@@ -14,17 +15,46 @@ A comprehensive collection of real-time communication implementations demonstrat
 
 ## 🎯 Overview
 
-This repository contains working implementations of various real-time communication patterns:
+This repository contains:
+1. Working implementations of real-time communication patterns (Long Polling, SSE)
+2. Structured system design interview study materials — beginner to architect level
 
-1. **Short Polling** (Documentation)
-2. **Long Polling** (Node.js + Go implementations)
-3. **Server-Sent Events (SSE)** (Go implementation)
+---
 
-Each demo includes:
-- ✅ Complete server implementation
-- ✅ React + TypeScript client
-- ✅ Comprehensive documentation
-- ✅ Ready-to-run examples
+## 🎓 Interview Study Materials
+
+Located in [`interviews/`](./interviews/). Each topic contains 4 files: `README.md`, `questions.md`, `answers.md`, `deep-dive.md`.
+
+See [`interviews/ROADMAP.md`](./interviews/ROADMAP.md) for the full study plan.
+
+### Topics Completed
+
+| # | Topic | Folder | Key Concepts |
+|---|-------|--------|--------------|
+| 1 | Rate Limiting | [`interviews/rate-limiting/`](./interviews/rate-limiting/) | Token bucket, Redis atomic ops, distributed enforcement |
+| 2 | Distributed Caching | [`interviews/distributed-caching/`](./interviews/distributed-caching/) | Eviction policies, cache-aside, write-through |
+| 3 | Consistent Hashing | [`interviews/consistent-hashing/`](./interviews/consistent-hashing/) | Virtual nodes, hash ring, rebalancing |
+| 4 | Sharding & Replication | [`interviews/sharding-replication/`](./interviews/sharding-replication/) | Horizontal sharding, leader/follower, quorum |
+| 5 | Message Queues | [`interviews/message-queues/`](./interviews/message-queues/) | Kafka, at-least-once, consumer groups |
+| 6 | API Design | [`interviews/api-design/`](./interviews/api-design/) | REST vs gRPC, pagination, versioning |
+| 7 | Chat System | [`interviews/chat-system/`](./interviews/chat-system/) | WebSockets, message ordering, fan-out |
+| 8 | Video Streaming | [`interviews/video-streaming/`](./interviews/video-streaming/) | CDN, adaptive bitrate, chunked upload |
+| 9 | File Storage | [`interviews/file-storage/`](./interviews/file-storage/) | Blob storage, deduplication, presigned URLs |
+| 10 | Social Feed | [`interviews/social-feed/`](./interviews/social-feed/) | Feed fan-out, ranking, pagination |
+| 11 | **Notification System** | [`interviews/notification-system/`](./interviews/notification-system/) | Push/Email/SMS pipeline, fan-out, idempotency |
+
+### Problem 11: Notification System (Push, Email, SMS)
+
+Design a notification system supporting **1M notifications/sec** across push (APNs/FCM), email (SendGrid/SES), and SMS (Twilio). Covers:
+- Multi-channel routing with provider abstraction
+- Critical vs promotional two-tier priority queues
+- Fan-out pattern for 50M-user campaigns
+- At-least-once delivery with idempotent dispatch
+- Per-user preferences, quiet hours, opt-out enforcement
+- Circuit breakers and provider failover
+- Multi-region routing with GDPR data residency
+
+Start here: [`interviews/notification-system/README.md`](./interviews/notification-system/README.md)
 
 ---
 
