@@ -622,4 +622,46 @@ The billing model typically hooks into the `attempt_count` metric per tenant per
 
 ---
 
-*End of conducive-sentences.md — all 40 answers from answers.md rendered as complete, connected prose.*
+---
+
+## Level 9 — Redundancy & No Single Points of Failure
+
+### A41. Infrastructure redundancy by layer — the chain that keeps the pipeline alive
+
+When you say a system is "highly available," what you are really saying is that every layer in the pipeline has its own mechanism for surviving its most likely failure. In a notification system, there is no single redundancy mechanism — there is a chain of them, one per layer, and the weakest link in the chain is your actual availability ceiling.
+
+**The load balancer** is the entry point for all inbound HTTP traffic. Cloud load balancers (AWS ALB, GCP HTTPS LB) are inherently multi-AZ: they distribute traffic across pods in multiple availability zones, and if an entire AZ goes down, the load balancer automatically stops routing to it. Recovery is instantaneous from the caller's perspective.
+
+**API pods and Webhook Handler pods** are stateless HTTP servers deployed as Kubernetes Deployments with a minimum of three replicas spread across three availability zones. When a pod crashes, Kubernetes detects the failed health check and schedules a replacement within about 60 seconds. When an AZ fails, the pods in the remaining two AZs absorb the traffic without any manual intervention.
+
+**Kafka** is the most consequential layer to get right, because it is the durability boundary for the entire pipeline. With a replication factor of 3 and `min.insync.replicas=2`, every message is written to at least two brokers before the producer receives an acknowledgment. If a broker fails, Kafka's KRaft controller elects a new partition leader from the remaining replicas in under 30 seconds, and no messages are lost. Workers that were consuming from the failed broker's partitions detect the leadership change and reconnect to the new leader automatically.
+
+**Dispatch workers and fan-out workers** are also Kubernetes Deployments, but their redundancy works differently from the API pods. Because they are Kafka consumers rather than HTTP servers, they don't need a load balancer — they need Kafka's consumer group rebalancing. When a worker pod crashes, its partition assignments are redistributed among the surviving pods within about 10 seconds. Any in-flight message that the crashed worker had consumed but not yet acknowledged becomes visible in the queue again after its visibility timeout expires, and another worker picks it up.
+
+**Redis** stores ephemeral but operationally critical state: per-user rate cap counters, shared 429 backoff signals, and circuit breaker state. In Redis Sentinel mode, three Redis nodes elect a master, and if the master fails, Sentinel promotes a replica to master in under 30 seconds. A brief window of writes may be lost during failover, but because Redis stores rate caps and backoff signals (not notification records), this is acceptable — a lost rate cap counter at worst allows one extra notification through, and a lost backoff signal at worst allows one extra provider call before the 429 is re-detected.
+
+**Cassandra** — the notification database at scale — achieves redundancy through replication across three availability zones with a replication factor of 3. Quorum writes (W=2) and quorum reads (R=2) mean that every write is confirmed by nodes in at least two AZs before it is acknowledged, and every read consults at least two nodes to return a consistent result. A single node failure or an entire AZ failure leaves the cluster fully operational, as the remaining two AZs satisfy quorum. When the failed node recovers, Cassandra's hinted handoff and anti-entropy repair automatically bring it back into sync.
+
+The one layer for which no infrastructure redundancy is possible is the external providers — APNs, FCM, Twilio, and SendGrid. These run on Apple's, Google's, and the SaaS companies' infrastructure, completely outside your control. This is exactly why A31 (circuit breaker with secondary provider failover) and A42 (channel fallback chain) exist: they are the application-level redundancy that completes the picture where infrastructure-level redundancy cannot reach.
+
+*So, the connection is:* infrastructure redundancy (this answer) and application redundancy (A31 provider circuit breaker, A42 channel fallback) are complements, not alternatives. Infrastructure redundancy keeps the pipeline alive when your own components fail. Application redundancy keeps notifications flowing when the external providers — which you cannot make redundant at the infrastructure level — fail.
+
+---
+
+### A42. The channel fallback chain — application-level redundancy for critical notifications
+
+Even after all infrastructure redundancy is in place, there remains a class of failure that infrastructure cannot solve: a user who is permanently unreachable on their primary notification channel. Their app is uninstalled (APNs returns `Unregistered`), or their device token has been recycled (APNs returns `BadDeviceToken`). For a critical notification — an OTP, a fraud alert, a security code — infrastructure redundancy cannot help because the problem is not that your system failed; it is that the delivery path to this specific user on this specific channel is permanently broken.
+
+The channel fallback chain is the answer. It is a configurable ordered list of delivery channels to attempt in sequence when the primary channel fails permanently. For critical notifications, the order is `push → SMS → email`. Push is the first choice because it is free and instant, but it depends on the user having the app installed. SMS is the second choice because it reaches any phone at any time with a 98% open rate, independent of whether the app is installed. Email is the last resort — slower, more likely to be missed — but universally available as long as the user registered with a valid address.
+
+The trigger condition matters precisely: fallback fires only on permanent provider rejection — `Unregistered`, `BadDeviceToken`, `InvalidRegistration` — not on transient 5xx failures. Transient failures go through the exponential retry in A25. If you triggered fallback on every 5xx, you would flood users with duplicate notifications every time Twilio had a brief degradation.
+
+The implementation creates a new notification record rather than mutating the original. This matters for three reasons: it gives the fallback attempt its own idempotency key (`hash(original_notification_id + 'sms')`), it preserves the original record's audit trail intact, and it allows the fallback to be processed by the SMS dispatch workers independently from the push workers. The new record carries a `parent_notification_id` field pointing back to the original, so your support team can reconstruct the full delivery story when a user says "I got a text, not a push."
+
+One rule must never be violated: **channel fallback applies exclusively to critical notifications**. A user who disabled push notifications for promotional content has not consented to receive the same marketing message via SMS. Applying fallback to promotional notifications would bypass the user's explicit channel preferences — a GDPR violation and a fast path to users blocking your SMS sender ID.
+
+*So, the connection is:* the channel fallback chain is the application-level complement to the circuit breaker in A31. The circuit breaker fires when a provider is temporarily down for all users; the fallback chain fires when a specific provider is permanently broken for one user. Both read from the routing service (A15) to find the next available channel — the routing logic is the single source of truth for what channels a user can receive.
+
+---
+
+*End of conducive-sentences.md — all 42 answers from answers.md rendered as complete, connected prose.*

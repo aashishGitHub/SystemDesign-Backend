@@ -620,7 +620,89 @@ For a known high-volume event (Super Bowl, New Year's), pre-provision:
 
 ---
 
-## 9. Quick Recall Cheat Sheet
+## 9. Redundancy & No Single Points of Failure
+
+### 🟢 Beginner — Hot Standby vs Cold Standby
+
+Think of it like backup power. A cold standby generator sits in a shed — when the power goes out, someone has to physically go flip a switch. You're in the dark for 10 minutes. A hot standby generator runs continuously in parallel, detects the outage in milliseconds, and takes over automatically. You don't even notice.
+
+Every layer in a well-designed notification system uses hot standby, not cold. Kafka replicas are already in sync when a broker dies — leadership transfers in 30 seconds with zero data loss. Kubernetes replacement pods start before you even get paged. You never need to "go flip a switch."
+
+---
+
+### 🟡 Senior — Redundancy at Every Layer
+
+**Infrastructure redundancy chain:**
+
+| Layer | Mechanism | Survives | Recovery |
+|---|---|---|---|
+| Load Balancer | Cloud LB spans all AZs (AWS ALB, GCP LB) | 1 AZ failure | Instant |
+| API / Webhook pods | K8s Deployment, `minReplicas=3` across 3 AZs | Pod crash; AZ failure | < 60s pod restart |
+| Kafka | RF=3, `min.insync.replicas=2` | 1 broker failure | Leader re-election < 30s, zero data loss |
+| Dispatch / Fan-out workers | K8s + Kafka consumer group rebalancing | Pod crash | Partition reassigned < 10s |
+| Redis | Sentinel (3 nodes) or Cluster; auto-failover | 1 master failure | < 30s; brief writes may be lost (acceptable) |
+| Cassandra | RF=3 across 3 AZs, W=2/R=2 quorum | 1 node or 1 AZ failure | Transparent; anti-entropy repairs on recovery |
+| DynamoDB | Managed multi-AZ + global tables | AZ / region failure | Transparent |
+
+**Application-level redundancy — channel fallback chain:**
+
+Infrastructure redundancy keeps your pipeline alive when *your* components fail. It cannot help when an external provider permanently can't reach a specific user (app uninstalled, token recycled). For that, you need the fallback chain:
+
+```
+Critical notification → push fails permanently (Unregistered / BadDeviceToken)
+  → fallback to SMS
+  → if SMS fails permanently (invalid number)
+    → fallback to email
+```
+
+```typescript
+const FALLBACK_CHAIN: Record<NotificationPriority, Record<Channel, Channel[]>> = {
+  critical:    { push: ['sms', 'email'], sms: ['email'], email: [] },
+  promotional: { push: [], sms: [], email: [] },  // no fallback for promotional
+}
+
+async function onPermanentFailure(notif: NotificationRecord, failedChannel: Channel) {
+  const nextChannels = FALLBACK_CHAIN[notif.priority][failedChannel]
+  const nextChannel  = nextChannels.find(c => user.hasVerified(c))
+  if (!nextChannel) { moveToDLQ(notif, 'no_fallback_channel'); return }
+
+  await db.insert({
+    ...notif,
+    id:                     crypto.randomUUID(),
+    parent_notification_id: notif.id,   // audit trail back to original
+    channel:                nextChannel,
+    status:                 'queued',
+    // idempotency_key = hash(notif.id + nextChannel) — new key, stable across retries
+  })
+}
+```
+
+**Two rules:**
+1. Trigger only on **permanent** rejection (`Unregistered`, `BadDeviceToken`) — not on 5xx (those retry via A25).
+2. Fallback applies to **critical notifications only** — promotional fallback bypasses the user's explicit channel preferences.
+
+---
+
+### 🔴 Architect — SPOF Analysis
+
+A single point of failure (SPOF) is any component whose failure takes down the entire system. Walk through the pipeline and explicitly identify them:
+
+| Component | Is it a SPOF? | Why not / Mitigation |
+|---|---|---|
+| Load Balancer | No | Cloud LBs are regionally distributed and managed; multi-AZ |
+| API pods | No | `minReplicas=3`; K8s reschedules crashed pods |
+| Kafka | No | RF=3; cluster survives minority broker failures |
+| Notification DB | No | Cassandra RF=3 / DynamoDB managed |
+| Redis | **Partial** | Sentinel failover < 30s; brief window of lost writes acceptable for rate caps; **not** acceptable if Redis stores durable state |
+| External providers | **Yes — by design** | You cannot make APNs/FCM/Twilio redundant at infra level. Mitigations: circuit breaker (A31) + secondary provider + channel fallback (A42) |
+| Fan-out worker | No | K8s + Kafka checkpoint + idempotent restart |
+| Webhook Handler | No | `minReplicas=3`; loss of a webhook = eventual consistency on delivery status, not data loss |
+
+**The residual SPOF is always the external provider.** The correct interview answer acknowledges this explicitly: "We cannot eliminate provider-level risk through infrastructure. We mitigate it through circuit breakers, secondary providers, and channel fallback — and we accept that some small percentage of critical notifications may require manual recovery via the DLQ."
+
+---
+
+## 10. Quick Recall Cheat Sheet
 
 | Concept | One-Line Recall |
 |---|---|

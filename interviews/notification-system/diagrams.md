@@ -609,3 +609,105 @@ flowchart LR
 | Dispatch error rate | < 0.1% | Systematic provider issues, config errors |
 | Critical DLQ depth | < 100 messages | Users not receiving OTPs / security alerts |
 | Fan-out lag (10M recipients) | < 10 minutes | Fan-out bottleneck, slow DB queries |
+
+---
+
+## Diagram 11 — Redundancy at Every Layer + Channel Fallback Chain
+
+> **When to use:** When asked "what are your SPOFs?" or "how does this system survive failures?" Two sub-diagrams: infrastructure redundancy by layer, then the application-level channel fallback chain.
+
+### Part A — Infrastructure Redundancy by Layer
+
+```mermaid
+flowchart TD
+    subgraph LBLayer["Load Balancer\nAWS ALB / GCP LB"]
+        LB["⚖️ Multi-AZ by default\nDistributed across all AZs\n✅ Survives: 1 AZ failure\n⏱ Recovery: instant"]
+    end
+
+    subgraph APILayer["API Pods + Webhook Handler Pods\nKubernetes Deployment"]
+        API["minReplicas=3 across 3 AZs\nK8s restarts crashed pods\n✅ Survives: pod crash · AZ failure\n⏱ Recovery: pod < 60s · AZ instant"]
+    end
+
+    subgraph KafkaLayer["Kafka Cluster"]
+        KF["Replication Factor = 3\nmin.insync.replicas = 2\nKRaft leader election\n✅ Survives: 1 broker failure\n⏱ Recovery: leader election < 30s\n📌 Zero data loss — W acknowledged\n   to 2 replicas before producer ACK"]
+    end
+
+    subgraph WorkerLayer["Dispatch + Fan-out Workers\nKubernetes + Kafka Consumer Groups"]
+        WK["minReplicas=3 across 3 AZs\nKafka rebalances partitions on pod crash\n✅ Survives: pod crash\n⏱ Recovery: partition reassigned < 10s\nIn-flight jobs re-queued after visibility timeout"]
+    end
+
+    subgraph RedisLayer["Redis\nSentinel (3 nodes) or Cluster"]
+        RD["Auto-failover: Sentinel promotes replica\n✅ Survives: 1 master failure\n⏱ Recovery: < 30s\n⚠️ Brief write loss acceptable\n   Redis stores rate caps + backoff signals,\n   NOT notification records"]
+    end
+
+    subgraph DBLayer["Notification Database\nCassandra or DynamoDB"]
+        DB["Cassandra: RF=3 across 3 AZs\nQuorum write W=2, read R=2\nDynamoDB: managed multi-AZ\n✅ Survives: 1 node failure · 1 AZ failure\n⏱ Recovery: transparent\nAnti-entropy repairs lagging nodes"]
+    end
+
+    subgraph ProviderLayer["External Providers\nAPNs · FCM · Twilio · SendGrid"]
+        PR["❌ Cannot make redundant\n   at infrastructure level\nMitigations:\n  • Circuit breaker → secondary provider\n  • Channel fallback chain (see Part B)\n  • DLQ for manual recovery"]
+    end
+
+    LBLayer --> APILayer --> KafkaLayer --> WorkerLayer --> DBLayer
+    WorkerLayer --> ProviderLayer
+
+    style LBLayer fill:#dcfce7,stroke:#16a34a
+    style APILayer fill:#dcfce7,stroke:#16a34a
+    style KafkaLayer fill:#dcfce7,stroke:#16a34a
+    style WorkerLayer fill:#dcfce7,stroke:#16a34a
+    style RedisLayer fill:#fef9c3,stroke:#ca8a04
+    style DBLayer fill:#dcfce7,stroke:#16a34a
+    style ProviderLayer fill:#fee2e2,stroke:#dc2626
+```
+
+### Part B — Channel Fallback Chain (Application-level Redundancy)
+
+```mermaid
+flowchart TD
+    Start([Critical notification\nstatus = queued]) --> PushAttempt
+
+    PushAttempt["Dispatch Worker\nAttempt push via APNs/FCM"]
+    PushAttempt -->|"HTTP 200\npush delivered ✅"| Done([Done])
+    PushAttempt -->|"5xx / timeout\ntransient failure"| Retry["Retry with\nexponential backoff\nup to max_retries"]
+    Retry -->|"success"| Done
+    Retry -->|"max retries exceeded"| DLQ1[DLQ — systemic issue]
+
+    PushAttempt -->|"Unregistered\nBadDeviceToken\nPERMANENT failure"| PushFailed
+
+    PushFailed["Mark push channel = failed\nInvalidate stale token in DB\nCreate new notification record:\n  parent_notification_id = original.id\n  channel = 'sms'\n  idempotency_key = hash(original.id + 'sms')"]
+
+    PushFailed --> SMSAttempt["Dispatch Worker\nAttempt SMS via Twilio"]
+    SMSAttempt -->|"SMS delivered ✅"| Done
+    SMSAttempt -->|"5xx / timeout"| Retry2["Retry with backoff"]
+    Retry2 -->|success| Done
+    Retry2 -->|max retries| DLQ2[DLQ]
+
+    SMSAttempt -->|"InvalidNumber\nPERMANENT failure"| SMSFailed
+
+    SMSFailed["Create new notification record:\n  parent_notification_id = original.id\n  channel = 'email'\n  idempotency_key = hash(original.id + 'email')"]
+
+    SMSFailed --> EmailAttempt["Dispatch Worker\nAttempt email via SendGrid"]
+    EmailAttempt -->|"Email delivered ✅"| Done
+    EmailAttempt -->|"All attempts failed"| DLQ3["DLQ\nPage on-call\nNo more channels available"]
+
+    subgraph Rules["Rules"]
+        R1["✅ Critical notifications only\n   Promotional = no fallback"]
+        R2["✅ Trigger = permanent rejection only\n   Transient 5xx → retry, not fallback"]
+        R3["✅ New DB record per fallback\n   parent_notification_id for audit trail"]
+        R4["✅ New idempotency key per channel\n   hash(original_id + channel_name)"]
+    end
+
+    style Done fill:#dcfce7,stroke:#16a34a
+    style DLQ1 fill:#fee2e2,stroke:#dc2626
+    style DLQ2 fill:#fee2e2,stroke:#dc2626
+    style DLQ3 fill:#fee2e2,stroke:#dc2626
+    style PushFailed fill:#fef9c3,stroke:#ca8a04
+    style SMSFailed fill:#fef9c3,stroke:#ca8a04
+```
+
+**Key talking points:**
+- Every green layer in Part A is self-healing — no human intervention required on failure
+- The only red layer is external providers — this is the irreducible risk; circuit breaker (Diagram 7) + fallback chain (Part B) are the mitigations
+- Redis is yellow: the brief write-loss window on failover is acceptable because Redis stores soft state (rate caps, backoff signals), not notification records
+- Part B fallback fires on **permanent** rejection only — transient 5xx goes through the normal retry loop first
+- `parent_notification_id` is the audit field that lets you reconstruct "we tried push, it failed permanently, then sent SMS" from the notification table

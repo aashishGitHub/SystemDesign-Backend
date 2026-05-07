@@ -720,6 +720,66 @@ Billing hooks into the `attempt_count` metric per tenant per channel.
 
 ---
 
+## Level 9 — Redundancy & No Single Points of Failure
+
+### A41. Infrastructure redundancy by layer
+
+Every layer of the pipeline has its own redundancy mechanism. The table below covers the complete chain:
+
+| Layer | Redundancy mechanism | What it survives | Recovery time |
+|---|---|---|---|
+| **Load Balancer** | Cloud LB is multi-AZ by default (AWS ALB spans all AZs in the region) | 1 AZ failure | Instant — traffic reroutes automatically |
+| **API pods** | K8s Deployment: `minReplicas=3` across 3 AZs; K8s restarts crashed pods | 1 pod crash; 1 AZ failure | < 60s for pod restart; instant for AZ (other pods absorb traffic) |
+| **Kafka brokers** | Replication factor (RF) = 3; `min.insync.replicas` = 2; controller elected via KRaft | 1 broker failure; partition leader reassignment | Leader re-election < 30s; no messages lost (RF=3 means 2 replicas still alive) |
+| **Fan-out workers** | K8s Deployment across AZs + Kafka consumer group rebalancing | Pod crash | Partition reassigned to surviving pod < 10s; job retried from queue |
+| **Dispatch workers** | Same as fan-out workers | Pod crash | < 10s rebalance; in-flight job visibility timeout expires, re-queued |
+| **Redis** (rate cap, backoff state) | Redis Sentinel (3 nodes) or Redis Cluster; automatic master failover | 1 Redis master failure | Sentinel promotes replica < 30s; brief writes may be lost (acceptable for rate caps) |
+| **Database** (Cassandra) | RF = 3 across 3 AZs; quorum write W=2, quorum read R=2 | 1 node failure; 1 AZ failure | Reads/writes continue with remaining 2 nodes; automatic repair when node recovers |
+| **Database** (DynamoDB) | Fully managed; multi-AZ by default; global tables for multi-region | AZ failure; region degradation (with global tables) | Transparent — no config needed |
+| **Webhook Handler pods** | K8s Deployment behind LB, same as API pods | Pod crash; AZ failure | < 60s |
+
+**The one layer with no automatic redundancy:** external providers (APNs, FCM, Twilio, SendGrid). These are outside your infrastructure. This is why A31 (circuit breaker + secondary provider) and A42 (channel fallback chain) exist — they are the application-level complement to the infrastructure redundancy above.
+
+---
+
+### A42. Channel fallback chain — when push fails, try SMS
+
+A channel fallback chain is a configurable ordered list of channels to attempt for a given notification if the primary channel fails permanently.
+
+**Trigger condition:** permanent provider rejection only — `Unregistered`, `BadDeviceToken` (APNs), `InvalidRegistration` (FCM). Transient 5xx failures use the exponential retry in A25. The fallback fires when a channel is confirmed unreachable for this user, not when it's temporarily slow.
+
+**Fallback order for critical notifications:**
+```
+push → SMS → email
+```
+Push is cheapest and fastest. SMS is highest-reliability (98% open rate, works without an app). Email is the last resort — slowest but most universally available.
+
+**Implementation:**
+```typescript
+// After dispatch worker marks push channel as 'failed' (permanent):
+async function triggerFallback(notification: NotificationRecord, failedChannel: Channel) {
+  const fallbackChain = FALLBACK_ORDER[notification.priority][failedChannel]
+  // e.g. FALLBACK_ORDER.critical.push = ['sms', 'email']
+  const nextChannel = fallbackChain.find(c => user.hasVerified(c))
+  if (!nextChannel) return  // no fallback available — log and DLQ
+
+  await db.insert({
+    ...notification,
+    id: crypto.randomUUID(),           // new record, new idempotency root
+    parent_notification_id: notification.id,  // links back to original for audit
+    channel: nextChannel,
+    status: 'queued',
+    // idempotency_key = hash(notification.id + nextChannel) — stable across retries
+  })
+}
+```
+
+**Critical rule: only for critical notifications.** Promotional notifications do NOT get a fallback chain. A user who has disabled push has not consented to receive the same marketing message via SMS. Applying fallback to promotional notifications would violate user preferences and likely GDPR.
+
+**Deduplication across channels:** Each fallback attempt is a new notification record with a new idempotency key suffix: `hash(original_notification_id + 'sms')`. The `parent_notification_id` field links the fallback to the original for audit trails and prevents the original from being retried after the fallback succeeds.
+
+---
+
 ## Quick Recall Cheat Sheet
 
 | Concept | One-Line Recall |
@@ -744,3 +804,5 @@ Billing hooks into the `attempt_count` metric per tenant per channel.
 | Priority queue ratio | 80% of worker fleet on critical queue; 20% on promotional |
 | Per-user daily cap | Redis INCR per `user_id:channel:day`; promotional only; critical bypasses |
 | 1M/sec capacity | ~16 push partitions, 350 FCM worker pods, Cassandra/DynamoDB for write volume |
+| Infra redundancy | Kafka RF=3 (survives 1 broker); Cassandra RF=3 across AZs (W=2/R=2 quorum); Redis Sentinel; K8s minReplicas=3 |
+| Channel fallback | Critical only: push → SMS → email; trigger = permanent provider rejection; new notification record with `parent_notification_id` |

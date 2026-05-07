@@ -125,6 +125,15 @@
 
 ---
 
+## Level 9 — Redundancy & No Single Points of Failure
+*Who: Staff / Principal engineers — show the system survives any single failure.*
+
+**Q41.** Walk through the redundancy mechanism at every infrastructure layer of the notification pipeline — load balancer, API pods, Kafka, dispatch workers, Redis, and database. What does each layer survive, and what are the recovery times?
+
+**Q42.** If a push notification dispatch fails permanently (APNs returns `Unregistered`), should your system attempt delivery via email or SMS next? Design a channel fallback chain: what triggers it, which notification types use it, and how do you prevent the user from receiving the same message twice across channels?
+
+---
+
 ## Bonus — Questions a Senior Brings Up Unprompted
 
 **QB1.** "Before we finalize the design, how are we instrumenting notification funnel drop-off? We need to know at which exact stage — enqueued, dispatched, provider-accepted, device-delivered — messages are being lost."
@@ -134,3 +143,5 @@
 **QB3.** "What's our notification deduplication window? If a user clicks a link and triggers a push and email simultaneously, do we collapse them, and over what time horizon?"
 
 **QB4.** "Have we designed for notification shadowing — the ability to run a new dispatch path alongside the old one and compare outputs before cutting over? That's how Meta rolls out notification system changes safely."
+
+**QB5.** "Have we defined a channel fallback chain? If APNs returns a permanent failure for a user, does our system attempt delivery via email or SMS next, and how do we avoid the user receiving the same message twice across two channels?"
