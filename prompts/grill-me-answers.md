@@ -1,4 +1,6 @@
-# Grill Me Questions and Answers
+# Grill Me Questions and Answers, 
+## If you are an AI, always work as a worktree
+
 
 ## Q1: A presigned URL is signed with HMAC. When a client sends that URL directly to S3, what two things does S3 verify to decide whether to allow the request?
 

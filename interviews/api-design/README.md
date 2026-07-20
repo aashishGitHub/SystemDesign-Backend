@@ -65,3 +65,14 @@ A strong answer recognizes that API design is not "REST vs GraphQL vs gRPC" — 
 Next, they separate API **contract** from **implementation**. The contract (resource models, status codes, versioning, pagination) is the public surface that must remain stable. The implementation behind the gateway can change freely. This separation is what enables safe evolution.
 
 Finally, they think about the API as a **product boundary**: it's where authentication, authorization, validation, rate limiting, and observability all converge. A well-designed API isn't just "correct endpoints" — it's idempotent writes, predictable error contracts, pagination that scales, and deprecation that doesn't break production clients.
+
+---
+
+## Related Topics
+
+This topic is the **deep dive for the synchronous half** of inter-service communication. For the bird's-eye map of where REST/gRPC/GraphQL sit relative to async messaging, start at the umbrella topic.
+
+- [Communication & Messaging Protocols](../communication-protocols/) — the umbrella: sync vs async decision tree, plus AMQP/Kafka/AWS/WebSockets that this topic doesn't cover
+- [Message Queues & Event Streaming](../message-queues/) — the asynchronous counterpart (Kafka, RabbitMQ, SQS, outbox, exactly-once)
+- [Rate Limiting](../rate-limiting/) — enforcing limits at the API boundary
+- [Notification System](../notification-system/) — a concrete system built on these API patterns

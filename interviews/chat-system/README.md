@@ -330,3 +330,4 @@ GET /users/{id}/profile -> UserProfile
 - [Distributed Caching](../distributed-caching/) — Redis for presence and routing
 - [Rate Limiting](../rate-limiting/) — Protecting against spam
 - [Notification System](../notification-system/) — Push notification patterns
+- [Communication & Messaging Protocols](../communication-protocols/) — WebSocket vs SSE vs Long Polling vs Kafka, and where real-time transport sits in the overall protocol map

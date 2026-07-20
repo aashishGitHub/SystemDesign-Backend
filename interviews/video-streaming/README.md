@@ -9,7 +9,8 @@
 
 1. Attempt each question in `questions.md` without opening answers.
 2. Check your reasoning in `answers.md`.
-3. Use `deep-dive.md` to practice senior/staff depth, failure modes, and production tradeoffs.
+3. **New to the topic?** Read `conducive-sentences.md` — it re-tells every answer as plain-English prose you can read top-to-bottom, with each concept flowing into the next.
+4. Use `deep-dive.md` to practice senior/staff depth, failure modes, and production tradeoffs.
 
 ---
 
@@ -34,7 +35,9 @@
 |---|---|
 | [questions.md](./questions.md) | 34 structured interview questions (8 levels + bonus). |
 | [answers.md](./answers.md) | Answers keyed to each question, with code/table per answer. |
+| [conducive-sentences.md](./conducive-sentences.md) | Plain-English prose version of every answer. Read to *understand*; each section ends with a "So, the connection is…" bridge to the next concept. |
 | [deep-dive.md](./deep-dive.md) | Beginner → Senior → Architect depth, real-world examples, failure modes. |
+| [diagrams.md](./diagrams.md) | 12 interview-ready Mermaid diagrams (start with Diagram 1 — the write/read path split), each with a "what the interviewer is checking" list. |
 
 ---
 

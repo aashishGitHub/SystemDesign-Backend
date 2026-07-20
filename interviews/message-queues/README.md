@@ -64,3 +64,14 @@ A strong answer starts by identifying **why async messaging** — it's not about
 Next, they choose the messaging model by use case: **point-to-point queues** for work distribution (one consumer per message), **pub-sub topics** for event broadcasting (many consumers per event). They know Kafka is a commit log (replay, ordering), while RabbitMQ is a traditional broker (routing, acks).
 
 Finally, they reason about **failure at every step**: producer fails after send but before ack (duplicate risk), consumer fails after processing but before commit (reprocessing), broker fails mid-write (data loss). A senior design includes idempotency keys, transactional outbox, dead letter queues, and consumer group rebalancing strategies.
+
+---
+
+## Related Topics
+
+This topic is the **deep dive for the asynchronous half** of inter-service communication. For the bird's-eye map of where Kafka/RabbitMQ/SQS sit relative to synchronous request/response, start at the umbrella topic.
+
+- [Communication & Messaging Protocols](../communication-protocols/) — the umbrella: sync vs async decision tree, plus REST/gRPC/GraphQL/WebSockets and AWS SNS/EventBridge framing
+- [API Design (REST/GraphQL/gRPC)](../api-design/) — the synchronous counterpart
+- [Chat System](../chat-system/) — queues + WebSockets applied to real-time messaging
+- [Notification System](../notification-system/) — per-channel queues, fan-out, and DLQs in a concrete system

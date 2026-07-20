@@ -1,0 +1,4 @@
+server/public/
+server/tmp-jobs/
+.venv/
+piper-voices/

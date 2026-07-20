@@ -12,10 +12,12 @@
 
 | Category | Total Topics | ✅ Done | 🔄 In Progress | 🔲 Not Started |
 |---|---|---|---|---|
-| Core Patterns | 10 | 6 | 0 | 4 |
-| Classic Problems | 18 | 6 | 0 | 12 |
-| Advanced Topics | 6 | 0 | 0 | 6 |
-| **Total** | **34** | **12** | **0** | **22** |
+| Core Patterns | 12 | 9 | 1 | 2 |
+| Classic Problems | 18 | 7 | 4 | 7 |
+| Advanced Topics | 6 | 1 | 0 | 5 |
+| **Total** | **36** | **17** | **5** | **14** |
+
+> **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `seat-reservation`, `web-crawler`, `search-autocomplete`.
 
 ---
 
@@ -173,7 +175,7 @@ Point-to-point vs pub-sub. Kafka vs RabbitMQ vs SQS vs Pulsar. At-least-once vs 
 ---
 
 ### Pattern 6 — CDN & Edge Computing
-**Status:** 🔲 Not Started | **Priority:** P1 | **Folder:** `interviews/cdn-edge/`
+**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P1 | **Folder:** `interviews/cdn-edge/`
 
 **What it covers:**
 What a CDN is and how it routes requests (Anycast DNS, GeoDNS). Push vs pull CDN. Cache-Control headers, TTL, purging. Edge functions (Cloudflare Workers, Lambda@Edge). CDN for dynamic vs static content. Origin shield. Multi-CDN strategy. CDN for video streaming (HLS, DASH, byte-range requests). Cache hit ratio optimization.
@@ -232,7 +234,7 @@ S3 architecture (buckets, objects, multipart upload). Presigned URLs. Chunked up
 ---
 
 ### Pattern 10 — Distributed Transactions & Consistency
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/distributed-transactions/`
+**Status:** ✅ Done | **Priority:** P2 | **Folder:** `interviews/distributed-transactions/`
 
 **What it covers:**
 ACID vs BASE. CAP theorem (what it actually says vs common misunderstandings). 2-Phase Commit (2PC). Saga pattern (choreography vs orchestration). Eventual consistency. Strong vs eventual consistency at application level. Compensating transactions. Distributed locks (Redlock, etcd, ZooKeeper). Optimistic vs pessimistic locking.
@@ -242,6 +244,40 @@ ACID vs BASE. CAP theorem (what it actually says vs common misunderstandings). 2
 - [ ] `questions.md`
 - [ ] `answers.md`
 - [ ] `deep-dive.md`
+
+---
+
+### Pattern 11 — Consensus & Coordination
+**Status:** ✅ Done | **Priority:** P1 | **Folder:** `interviews/consensus/`
+
+**What it covers:**
+Why distributed agreement is needed (split-brain, leader election). Replicated state machine + replicated log. Paxos (proposer/acceptor/learner, Multi-Paxos). Raft (leader election, terms, log replication, safety). FLP impossibility. Quorum math (⌊N/2⌋+1, odd cluster sizes). Coordination services: ZooKeeper (ZAB), etcd (Raft), Consul. Membership changes. Keeping consensus off the hot path (leases, per-shard groups).
+
+**Why it's asked at data-infra orgs:**
+Any system with leader election, config, distributed locks, or a replicated log rests on consensus. Interviewers probe this the moment you say "the leader decides…" or "the cluster agrees…".
+
+**Creation checklist:**
+- [x] `README.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `deep-dive.md`
+
+---
+
+### Pattern 12 — Storage Engines (LSM-Tree vs B-Tree)
+**Status:** ✅ Done | **Priority:** P1 | **Folder:** `interviews/storage-engines/`
+
+**What it covers:**
+B-tree (in-place, read-optimized, Postgres/InnoDB) vs LSM-tree (WAL → MemTable → SSTable, write-optimized, Cassandra/RocksDB/Bigtable). LSM read path with Bloom filters. Compaction (size-tiered vs leveled) and write stalls. Read/write/space amplification (RUM conjecture). WAL & crash recovery. MVCC. Choosing an engine for a workload. Probabilistic structures (Bloom filter, HyperLogLog, Count-Min Sketch).
+
+**Why it's asked at data-infra orgs:**
+"How does your database store data on disk?" is a core question at any DB/storage company. LSM vs B-tree tradeoffs separate candidates who've operated storage from those who've only used it.
+
+**Creation checklist:**
+- [x] `README.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `deep-dive.md`
 
 ---
 
@@ -260,7 +296,7 @@ ACID vs BASE. CAP theorem (what it actually says vs common misunderstandings). 2
 ---
 
 ### Problem 2 — URL Shortener (TinyURL / Bitly)
-**Status:** 🔲 Not Started | **Priority:** P1 | **Folder:** `interviews/url-shortener/`
+**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P1 | **Folder:** `interviews/url-shortener/`
 
 **What it covers:**
 Encoding strategies (Base62, MD5+truncation). ID generation at scale (auto-increment vs Snowflake ID). Redirect types (301 vs 302). Custom aliases. Expiry. Analytics (click counting, geo tracking). Read-heavy optimization (Redis cache in front of DB). Handling collisions. DB sharding by short code. Abuse prevention.
@@ -329,7 +365,7 @@ Chat is a canonical real-time system. It tests WebSocket management, message ord
 ---
 
 ### Problem 5 — Ticketmaster (Seat Reservation / Concurrency)
-**Status:** 🔲 Not Started | **Priority:** P1 | **Folder:** `interviews/seat-reservation/`
+**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P1 | **Folder:** `interviews/seat-reservation/`
 
 **What it covers:**
 Inventory management under high concurrency. Optimistic vs pessimistic locking for seat holds. Temporary seat reservation with TTL (Redis lock). Distributed queue for checkout (waiting room). Flash sale / demand spike handling. Idempotency in payment flow. ACID transaction boundaries (payment + seat assignment). Overbooking prevention. Database design for venue→event→seat hierarchy.
@@ -405,7 +441,7 @@ Google Drive is a Google product. Content-addressable storage, chunking, and syn
 ---
 
 ### Problem 9 — Web Crawler (Google Search Indexer)
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/web-crawler/`
+**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P2 | **Folder:** `interviews/web-crawler/`
 
 **What it covers:**
 Seed URL management. BFS vs DFS traversal. URL frontier (priority queue). Duplicate URL detection (Bloom filter, hash set). robots.txt compliance. Politeness (rate limiting per domain). Distributed crawling with consistent hashing across workers. Content extraction and parsing. Link extraction. Scheduling re-crawl by freshness signal. DNS resolution at scale. Storing crawled content (blob storage).
@@ -424,7 +460,7 @@ Googled it. Google literally indexes the web. Bloom filters, distributed BFS, an
 ---
 
 ### Problem 10 — Search Autocomplete / Typeahead
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/search-autocomplete/`
+**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P2 | **Folder:** `interviews/search-autocomplete/`
 
 **What it covers:**
 Trie data structure for prefix matching. Aggregating top-K suggestions per prefix. Real-time updates vs batch updates to the trie. Personalized suggestions vs global top-K. Distributed trie (sharded by prefix character). Caching for common prefixes. Fuzzy matching (edit distance). Filtering inappropriate suggestions. Multi-language support. Analytics for improving suggestions.
@@ -462,7 +498,7 @@ Notifications are a sub-system in nearly every product. Probing notification des
 ---
 
 ### Problem 12 — Distributed Key-Value Store (like DynamoDB / Redis)
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/kv-store/`
+**Status:** ✅ Done | **Priority:** P2 | **Folder:** `interviews/kv-store/`
 
 **What it covers:**
 Hash ring for key distribution. Quorum reads/writes (N, W, R and W+R>N). Consistent hashing with virtual nodes. Vector clocks for conflict resolution. Gossip protocol for membership. Anti-entropy and Merkle trees for data repair. Compaction (LSM tree). Write path (WAL → MemTable → SSTable). Read path (Bloom filter → SSTable). Replication strategies.
@@ -598,7 +634,7 @@ Google Docs is a Google product. CRDTs and OT are advanced but expected for Staf
 ---
 
 ### Advanced 1 — Observability Stack (Metrics, Logs, Traces)
-**Status:** 🔲 Not Started | **Priority:** P3 | **Folder:** `interviews/observability/`
+**Status:** ✅ Done | **Priority:** P3 | **Folder:** `interviews/observability/`
 
 **What it covers:**
 The three pillars: metrics (Prometheus), logs (ELK Stack / Loki), traces (Jaeger, Zipkin, OpenTelemetry). SLO/SLA/SLI definitions. Error budgets. Distributed tracing context propagation. Cardinality problems with metrics. Alerting philosophy (symptom vs cause). Dashboarding with Grafana. On-call runbooks. Chaos engineering basics.
@@ -654,35 +690,37 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 3 | Sharding & Replication | Pattern | P1 | ✅ | None |
 | 4 | Distributed Caching | Pattern | P1 | ✅ | None |
 | 5 | Message Queues | Pattern | P1 | 🔲 | None |
-| 6 | CDN & Edge | Pattern | P1 | 🔲 | None |
+| 6 | CDN & Edge | Pattern | P1 | 🔄 | None |
 | 7 | Load Balancing | Pattern | P2 | 🔲 | None |
 | 8 | API Design | Pattern | P2 | 🔲 | None |
 | 9 | Blob Storage | Pattern | P2 | 🔲 | None |
-| 10 | Distributed Transactions | Pattern | P2 | 🔲 | Sharding & Replication |
+| 10 | Distributed Transactions | Pattern | P2 | ✅ | Sharding & Replication |
 | 11 | ✅ Recommendation Engine | Problem | P1 | ✅ | Kafka, Caching, CDN |
-| 12 | URL Shortener | Problem | P1 | 🔲 | Hashing, Caching |
+| 12 | URL Shortener | Problem | P1 | 🔄 | Hashing, Caching |
 | 13 | Social Feed (Twitter) | Problem | P1 | ✅ | Queues, Caching, Sharding |
 | 14 | Chat System (WhatsApp) | Problem | P1 | 🔲 | Queues, WebSockets |
-| 15 | Seat Reservation | Problem | P1 | 🔲 | Caching, Locking |
+| 15 | Seat Reservation | Problem | P1 | 🔄 | Caching, Locking |
 | 16 | Ride Sharing (Uber) | Problem | P1 | 🔲 | Geospatial, WebSockets |
 | 17 | Video Streaming (Netflix) | Problem | P1 | 🔲 | CDN, Blob Storage |
 | 18 | File Storage (Drive) | Problem | P1 | ✅ | Blob Storage, Caching |
-| 19 | Web Crawler | Problem | P2 | 🔲 | Hashing, Queues |
-| 20 | Search Autocomplete | Problem | P2 | 🔲 | Caching, Hashing |
+| 19 | Web Crawler | Problem | P2 | 🔄 | Hashing, Queues |
+| 20 | Search Autocomplete | Problem | P2 | 🔄 | Caching, Hashing |
 | 21 | Notification System | Problem | P2 | ✅ | Queues, Rate Limiting |
-| 22 | Distributed KV Store | Problem | P2 | 🔲 | Hashing, Replication |
+| 22 | Distributed KV Store | Problem | P2 | ✅ | Hashing, Replication |
 | 23 | Ad Click Aggregation | Problem | P2 | 🔲 | Kafka, Stream Processing |
 | 24 | Leaderboard / Top-K | Problem | P2 | 🔲 | Caching (Redis) |
 | 25 | Job Scheduler | Problem | P2 | 🔲 | Distributed Locking |
 | 26 | Payment System | Problem | P2 | 🔲 | Distributed Transactions |
 | 27 | Google Maps | Problem | P3 | 🔲 | CDN, Caching, Geospatial |
 | 28 | Collaborative Editing | Problem | P3 | 🔲 | WebSockets, CRDTs |
-| 29 | Observability Stack | Advanced | P3 | 🔲 | All patterns |
+| 29 | Observability Stack | Advanced | P3 | ✅ | All patterns |
 | 30 | Security Patterns | Advanced | P3 | 🔲 | API Design |
 | 31 | Multi-Region Architecture | Advanced | P3 | 🔲 | Replication, CDN |
 | 32 | Stream Processing | Advanced | P3 | 🔲 | Message Queues |
 | 33 | ML Platform | Advanced | P3 | 🔲 | Rec Engine |
 | 34 | Search Engine | Advanced | P3 | 🔲 | Web Crawler, Autocomplete |
+| 35 | Consensus & Coordination | Pattern | P1 | ✅ | None |
+| 36 | Storage Engines (LSM/B-Tree) | Pattern | P1 | ✅ | None |
 
 ---
 

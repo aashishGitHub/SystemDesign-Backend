@@ -42,6 +42,8 @@ See [`interviews/ROADMAP.md`](./interviews/ROADMAP.md) for the full study plan.
 | 9 | File Storage | [`interviews/file-storage/`](./interviews/file-storage/) | Blob storage, deduplication, presigned URLs |
 | 10 | Social Feed | [`interviews/social-feed/`](./interviews/social-feed/) | Feed fan-out, ranking, pagination |
 | 11 | **Notification System** | [`interviews/notification-system/`](./interviews/notification-system/) | Push/Email/SMS pipeline, fan-out, idempotency |
+| 12 | **Communication & Messaging Protocols** | [`interviews/communication-protocols/`](./interviews/communication-protocols/) | Sync vs async, REST/gRPC/GraphQL, AMQP/Kafka, AWS SQS/SNS/EventBridge, WebSockets |
+| 13 | **Food Delivery** (DoorDash / Swiggy) | [`interviews/food-delivery/`](./interviews/food-delivery/) | 3-sided marketplace, menu availability sync, prep-aware dispatch, event-driven saga, live tracking, frontend HLD |
 
 ### Problem 11: Notification System (Push, Email, SMS)
 
@@ -55,6 +57,70 @@ Design a notification system supporting **1M notifications/sec** across push (AP
 - Multi-region routing with GDPR data residency
 
 Start here: [`interviews/notification-system/README.md`](./interviews/notification-system/README.md)
+
+### Problem 12: Communication & Messaging Protocols (REST · gRPC · GraphQL · AMQP · Kafka · AWS · WebSockets)
+
+The **umbrella topic** for *how services talk to each other* — the most common opening decision in a backend interview. It is breadth-first by design: it surveys the entire communication surface in one place for revision, then links out to the deep-dive topics instead of duplicating them. Covers:
+- Synchronous vs asynchronous communication and the **protocol-selection decision tree**
+- HTTP fundamentals (URIs, safe/idempotent methods, HTTP/1.1 → HTTP/2 multiplexing → HTTP/3 QUIC)
+- REST (statelessness, ETag caching, versioning, idempotency keys), gRPC + Protobuf, GraphQL (N+1, DataLoader)
+- AMQP/RabbitMQ (exchanges, bindings, queues vs streams) and Kafka (partitions, consumer groups, event sourcing)
+- AWS managed messaging — SQS (Standard/FIFO), SNS (A2A/A2P, fan-out), EventBridge, DLQs
+- WebSockets vs SSE vs Long Polling, and the WebSocket-vs-Kafka category error
+- At-least-once + idempotency (why exactly-once delivery is a myth), backpressure, contract evolution
+
+This topic ships **7 files** — the standard four plus [`conducive-sentences.md`](./interviews/communication-protocols/conducive-sentences.md) (plain-English prose), [`diagrams.md`](./interviews/communication-protocols/diagrams.md) (Mermaid), and [`grill-me.md`](./interviews/communication-protocols/grill-me.md) (adversarial "defend your choice" drilling).
+
+Cross-links: [`api-design`](./interviews/api-design/) (REST/gRPC/GraphQL depth) · [`message-queues`](./interviews/message-queues/) (Kafka/RabbitMQ/SQS depth) · [`chat-system`](./interviews/chat-system/) & [`sse`](./interviews/sse/) (WebSocket/SSE depth).
+
+Start here: [`interviews/communication-protocols/README.md`](./interviews/communication-protocols/README.md)
+
+---
+
+## 📋 How to Add a New Interview Topic
+
+This pattern was established while creating `communication-protocols/`. Follow it exactly so every topic is revision-compatible with every other.
+
+### File Structure (8 files per topic)
+
+| # | File | Purpose | Key Convention |
+|---|------|---------|----------------|
+| 1 | `README.md` | Umbrella map | Learning path table, 8-file index, Problem Statement, "How a Senior Engineer Thinks", Related Topics cross-links |
+| 2 | `questions.md` | All questions, numbered | `Q1`–`QN` + `QB1`–`QB5` bonus, grouped by level (L1–L10). Write this **before** answers — it is the locked structure everything else keys off. |
+| 3 | `answers.md` | Full answers | Every answer has a code block OR comparison table. End file with a **Quick Recall Cheat Sheet** (40-row table: Term → One-line answer). Cross-link deep-dive topics instead of duplicating depth. |
+| 4 | `conducive-sentences.md` | Plain-prose version | Every answer rewritten as connected English paragraphs. Each section ends with `*So, the connection is: …*` |
+| 5 | `deep-dive.md` | 🟢🟡🔴 depth per level | 10 chapters × Beginner 🟢 / Senior 🟡 / Architect 🔴 sections. End file with a **Quick Recall Cheat Sheet** (50-row table). Add inline links to `glossary.md` for any niche term. |
+| 6 | `diagrams.md` | Mermaid diagrams | At least one protocol/decision-flow diagram. Diagram 1 is always the top-level decision tree for the topic. |
+| 7 | `grill-me.md` | Adversarial Q&A | Follow `prompts/grill-me-answers.md` format exactly. Per question: Answer → Why X is wrong → Key Insight → When to use in interviews. Cover the traps, not just the happy paths. |
+| 8 | `glossary.md` | Niche-term definitions | Created **after** `deep-dive.md`. Grep deep-dive for jargon with no inline definition, create one entry per term, add inline `[term](./glossary.md#anchor)` links back. |
+
+### Creation Order
+
+```
+1. Source material review → identify overlaps with existing topics
+2. Decide: umbrella topic (breadth-first) OR deep-dive (one specific layer)?
+3. Write README.md + questions.md first (locked scaffold)
+4. Write answers.md (keys off question IDs)
+5. Write conducive-sentences.md + deep-dive.md + diagrams.md + grill-me.md in parallel
+6. Grep deep-dive for unexplained jargon → write glossary.md → add inline links
+7. Update this README.md (Topics Completed table + Problem section)
+8. Add "Related Topics" cross-links in the neighbouring folders
+```
+
+### Scope Decision
+
+| Situation | Decision |
+|-----------|----------|
+| New topic with no existing coverage | Full deep-dive topic |
+| New topic that wraps several existing topics | **Umbrella topic** — breadth-first survey, links out rather than duplicating |
+| Existing topic needs a new angle | Add a section; don't create a new folder |
+
+### Key Conventions
+
+- **Cheat sheets go at the bottom** of `answers.md` and `deep-dive.md` — the last thing you read before an interview, the first thing you scan when revising.
+- **Glossary over inline explanations** — if a term needs more than one sentence to define, it belongs in `glossary.md` with an anchor link. Keeps deep-dive readable.
+- **Cross-link, don't duplicate** — if `message-queues/` already covers Kafka partitions in depth, `communication-protocols/` links there. Two copies of the same content means two places to update when you learn something new.
+- **Related Topics in every README** — every topic folder must tell the reader where to go next (and where the umbrella map is).
 
 ---
 
