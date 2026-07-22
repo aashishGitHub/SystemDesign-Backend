@@ -37,6 +37,12 @@ flowchart TD
     style WRITE fill:#fed7aa,stroke:#ea580c
     style READ fill:#dcfce7,stroke:#16a34a
     style EDGE fill:#fef9c3,stroke:#ca8a04
+
+
+    
+
+
+
 ```
 
 **What the interviewer is checking:**
