@@ -7,9 +7,11 @@
 
 ## How to Use This Guide
 
-1. Attempt every question in `questions.md` cold before reading answers.
-2. Check `answers.md` — compare your reasoning, note what you missed.
-3. Use `deep-dive.md` for senior/architect depth, real-world Uber/Lyft implementations, and failure modes.
+1. **Draw the picture first.** Open `simple-diagram.md` and internalize the three-plane split (location ingest · matching · trip+tracking) — it's the frame everything else hangs off.
+2. Attempt every question in `questions.md` cold before reading answers.
+3. Check `answers.md` — compare your reasoning, note what you missed.
+4. Use `diagrams.md` to practice whiteboarding — 11 interview-ready Mermaid diagrams, each mapped to specific questions with a "what the interviewer is checking" list.
+5. Use `deep-dive.md` for senior/architect depth, real-world Uber/Lyft implementations, and failure modes.
 
 ---
 
@@ -32,8 +34,10 @@
 
 | File | Purpose |
 |---|---|
+| [simple-diagram.md](./simple-diagram.md) | Bare-minimum mental model (three planes) + detailed diagram with concrete services & protocols. **Start here.** |
 | [questions.md](./questions.md) | 44 structured questions (8 levels + bonus QB). Attempt cold first. |
 | [answers.md](./answers.md) | Every answer with code or comparison table, named tradeoffs, company references. |
+| [diagrams.md](./diagrams.md) | 11 interview-ready Mermaid diagrams (start with Diagram 1 — the three-plane split), each with a "what the interviewer is checking" list. |
 | [deep-dive.md](./deep-dive.md) | Beginner → Architect depth, real-world Uber implementations, failure modes, cheat sheet. |
 
 ---
