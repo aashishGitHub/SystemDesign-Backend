@@ -133,6 +133,38 @@
 
 ---
 
+## Level 9 — Digital Tickets, QR Codes & Notifications
+*Who: Senior engineers — turning a confirmed booking into a secure, scannable ticket and keeping the buyer informed.*
+
+**Q43.** Payment just succeeded and the booking is `CONFIRMED`. Walk through issuing the digital ticket. What goes *inside* the QR code — and why must it not simply be the booking id or seat id?
+
+**Q44.** Design the QR so it cannot be forged, screenshot-and-reused by two people, or shared to defeat entry. Compare a signed static token vs a rotating (time-based) code, and explain how a venue gate validates a ticket **offline** (no connectivity at the turnstile).
+
+**Q45.** Where and how is the digital ticket stored and delivered so the user can always access it — app wallet passes (Apple Wallet / Google Wallet), email/PDF, account deep link? How do you re-issue a lost ticket without creating a second valid entry?
+
+**Q46.** Design the notification flow: immediate booking confirmation, event reminders (T-24h, T-1h), and day-of entry updates. How do you *schedule* a reminder reliably, make it idempotent (never double-send), and dedupe across push/email/SMS?
+
+**Q47. (Failure mode)** Payment is captured and the booking is `CONFIRMED`, but QR generation / ticket issuance fails. What does the user see, and how do you guarantee they still end up with exactly one valid ticket?
+
+---
+
+## Level 10 — Frontend Architecture (Architect)
+*Who: Staff / frontend architects — the interactive seat map and checkout under real conditions, at venue scale.*
+
+**Q48.** Design the interactive seat map for a venue with up to ~80,000 seats. What is your rendering strategy (SVG vs Canvas vs WebGL), how do you virtualize to the viewport, and how do you hit-test the seat a user taps while supporting smooth zoom/pan?
+
+**Q49.** Show real-time availability and lock status on the map — a seat must flip to "held" the instant another user grabs it. What transport (WebSocket / SSE / poll), what update granularity, and how do you avoid pushing all 80,000 seat states to every connected client?
+
+**Q50.** Design the checkout UX for multiple tickets plus offers/promos: the hold **countdown timer**, adding/removing seats mid-hold, applying an offer, and keeping the client-side timer honest against the server's authoritative TTL (so the user is never surprised by an early expiry).
+
+**Q51.** Client-side ticket storage and QR rendering: how does the user open their QR at the gate with **no signal**, how does a rotating code refresh, and how does wallet integration fit in?
+
+**Q52.** Accessibility for a large seat map: keyboard navigation across tens of thousands of seats, screen-reader semantics for a visual grid, conveying availability/lock status without relying on color alone, and focus management in the countdown/checkout.
+
+**Q53.** Performance: the initial load of an 80k-seat map, avoiding jank on zoom/pan, minimizing the cost of real-time updates, and degrading gracefully on low-end devices and flaky networks.
+
+---
+
 ## Bonus — Unprompted Senior Questions
 *These are questions a strong candidate raises without being asked. Raising them unprompted is a strong positive signal.*
 

@@ -7,9 +7,10 @@
 
 ## How to Use This Guide
 
-1. **First pass** — attempt every question yourself before reading the answer. Write your answer on paper or a whiteboard. Time yourself: 3–5 minutes per question.
-2. **Second pass** — read the answers in `answers.md`, compare against your attempt, and note every gap. Pay special attention to Redis commands, SQL locking patterns, and capacity numbers you missed.
-3. **Third pass** — whiteboard the full system from memory with no notes. Draw every service, queue, and database. Narrate the seat-selection and checkout flows end-to-end, then stress-test yourself with the Taylor Swift flash-sale scenario.
+1. **Get the mental model** — skim [simple-diagram.md](./simple-diagram.md) first: it names the central split (ephemeral Redis hold vs durable SQL booking, fronted by the virtual waiting room) in one screen.
+2. **First pass** — attempt every question in [questions.md](./questions.md) yourself before reading the answer. Write your answer on paper or a whiteboard. Time yourself: 3–5 minutes per question.
+3. **Second pass** — read the answers in [answers.md](./answers.md), compare against your attempt, and note every gap. Pay special attention to Redis commands, SQL locking patterns, and capacity numbers you missed.
+4. **Whiteboard** — reproduce the system from [diagrams.md](./diagrams.md) (start with Diagram 1 — the central split), then narrate the seat-selection and checkout flows end-to-end and stress-test yourself with the Taylor Swift flash-sale scenario.
 
 ---
 
@@ -25,6 +26,8 @@
 | 6 | Database Design | Venue → Section → Row → Seat schema, read vs write path separation |
 | 7 | Operations & Failure Modes | Partial payment failure, Redis crash during hold, double-charge prevention |
 | 8 | Architect-Level Tradeoffs | Consistency models, global scale, Ticketmaster 2022 post-mortem lessons |
+| 9 | Digital Tickets, QR & Notifications | Secure QR (signed / rotating tokens), offline gate validation, wallet passes, reliable reminders |
+| 10 | Frontend Architecture | Interactive 80k-seat map, real-time lock status, checkout UX, accessibility, performance |
 
 ---
 
@@ -32,8 +35,10 @@
 
 | File | Purpose |
 |------|---------|
-| [questions.md](./questions.md) | 35+ questions across 8 levels. Attempt before reading answers. |
-| [answers.md](./answers.md) | Full answers with TypeScript code, Redis commands, SQL, comparison tables. |
+| [simple-diagram.md](./simple-diagram.md) | **Start here.** The central split (ephemeral hold vs durable booking, fronted by the waiting room) + a detailed version with real services and protocols. |
+| [questions.md](./questions.md) | 53 questions across 10 levels + bonus. Attempt before reading answers. |
+| [answers.md](./answers.md) | Full answers with TypeScript code, Redis commands, SQL, comparison tables, and named tradeoffs. |
+| [diagrams.md](./diagrams.md) | 10 interview-ready Mermaid diagrams (start with Diagram 1 — the central split). |
 | [deep-dive.md](./deep-dive.md) | In-depth explanations from beginner analogy to architect capacity math. |
 
 ---
