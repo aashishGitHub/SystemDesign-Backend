@@ -13,11 +13,11 @@
 | Category | Total Topics | ✅ Done | 🔄 In Progress | 🔲 Not Started |
 |---|---|---|---|---|
 | Core Patterns | 12 | 9 | 1 | 2 |
-| Classic Problems | 18 | 7 | 4 | 7 |
+| Classic Problems | 19 | 10 | 3 | 6 |
 | Advanced Topics | 6 | 1 | 0 | 5 |
-| **Total** | **36** | **17** | **5** | **14** |
+| **Total** | **37** | **20** | **4** | **13** |
 
-> **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `seat-reservation`, `web-crawler`, `search-autocomplete`.
+> **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `web-crawler`, `search-autocomplete`.
 
 ---
 
@@ -364,8 +364,10 @@ Chat is a canonical real-time system. It tests WebSocket management, message ord
 
 ---
 
-### Problem 5 — Ticketmaster (Seat Reservation / Concurrency)
-**Status:** 🔄 In Progress (README + questions + answers done; deep-dive pending) | **Priority:** P1 | **Folder:** `interviews/seat-reservation/`
+### Problem 5 — Ticketmaster (Seat Reservation / Concurrency) ✅
+**Status:** ✅ Done | **Priority:** P1 | **Folder:** `interviews/seat-reservation/`
+
+**Framing:** Central split = a booking is a **two-tier** problem — an **ephemeral hold** (Redis `SETNX` + TTL, high contention, auto-expires) vs a **durable booking** (SQL/ACID, money, zero overbooking) — **fronted by a virtual waiting room** at sale-open, with a cacheable read path separated from the strong-consistency write path. Upgraded to the new-spec richer treatment (added `simple-diagram.md` + `diagrams.md`) and extended with **Level 9 (Digital Tickets, QR & Notifications)** and **Level 10 (Frontend Architecture)** — the interactive 80k-seat map, real-time lock status, checkout UX, accessibility.
 
 **What it covers:**
 Inventory management under high concurrency. Optimistic vs pessimistic locking for seat holds. Temporary seat reservation with TTL (Redis lock). Distributed queue for checkout (waiting room). Flash sale / demand spike handling. Idempotency in payment flow. ACID transaction boundaries (payment + seat assignment). Overbooking prevention. Database design for venue→event→seat hierarchy.
@@ -376,10 +378,12 @@ Inventory management under high concurrency. Optimistic vs pessimistic locking f
 Concurrency control, the "thundering herd" at sale open time, and distributed locking are senior-level fundamentals. This problem exposes exactly how well a candidate understands transactions and race conditions.
 
 **Creation checklist:**
-- [ ] `README.md`
-- [ ] `questions.md`
-- [ ] `answers.md`
-- [ ] `deep-dive.md`
+- [x] `README.md`
+- [x] `simple-diagram.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `diagrams.md`
+- [x] `deep-dive.md`
 
 ---
 
@@ -608,22 +612,49 @@ Geospatial indexing (Quadtree, Geohash, S2 cells). Map tile serving (tile pyrami
 
 ---
 
-### Problem 18 — Real-Time Collaborative Editing (Google Docs)
-**Status:** 🔲 Not Started | **Priority:** P3 | **Folder:** `interviews/collaborative-editing/`
+### Problem 18 — Real-Time Collaborative Editing (Google Sheets / Docs) ✅
+**Status:** ✅ Done | **Priority:** P3 | **Folder:** `interviews/collaborative-editing/`
+
+**Framing:** Built around **Google Sheets** (grid + calc engine) — the central split is the **sync plane** (concurrent edits → converge via OT/CRDT) vs the **calc plane** (formula dependency DAG → deterministic recompute). Text-only editing (Docs) is the simpler sub-case.
 
 **What it covers:**
-Operational Transformation (OT) vs Conflict-Free Replicated Data Types (CRDTs). Cursor presence. Multi-user awareness (who is editing where). WebSocket-based real-time sync. Server-side document state. Version history (snapshot + delta). Offline editing and merge. Access control. Comment threading. Export pipeline (PDF, DOCX).
+Operational Transformation (OT) vs Conflict-Free Replicated Data Types (CRDTs). The signature spreadsheet problem: concurrent structural ops (row/col insert) shifting every address + reference, solved with stable identities. The calculation engine (dependency DAG, dirty-mark → topo-sort → minimal recompute, cycle detection, determinism). Single-writer doc-servers + lease/fencing. Snapshot + op-log persistence. Cursor presence on a separate channel. Version history + selective per-user undo. Offline editing and batched-OT merge. Access control on the op path. Frontend: optimistic OT client + virtualized canvas grid.
 
-**Patterns used:** WebSockets, Message Queues, Distributed Caching, Blob Storage
+**Patterns used:** WebSockets, Consensus (single-writer/lease/fencing), Storage Engines (WAL+snapshot), Distributed Caching, File Storage (snapshot+delta), Blob Storage
 
 **Why Google asks this:**
-Google Docs is a Google product. CRDTs and OT are advanced but expected for Staff-level Google interviews. This is the hardest problem on the list.
+Google Docs/Sheets are Google products. OT/CRDT and the calc engine are advanced but expected for Staff-level interviews. This is one of the hardest problems on the list.
 
 **Creation checklist:**
-- [ ] `README.md`
-- [ ] `questions.md`
-- [ ] `answers.md`
-- [ ] `deep-dive.md`
+- [x] `README.md`
+- [x] `simple-diagram.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `diagrams.md`
+- [x] `deep-dive.md`
+
+---
+
+### Problem 19 — E-Commerce Platform (Amazon / Shopify) ✅
+**Status:** ✅ Done | **Priority:** P1 | **Folder:** `interviews/e-commerce/`
+
+**Framing:** An **umbrella topic** organized around the **consistency gradient** — **browse** (read-heavy, eventual, cache/CDN) → **cart** (always-available, AP/Dynamo) → **checkout** (strong: no oversell + no double-charge, saga) → **fulfillment** (async, event-driven). Reuses depth from neighbours instead of duplicating.
+
+**What it covers:**
+Catalog read path (CDN→Redis→replicas, cache-by-immutable-version, price/availability overlay). Search via CDC-fed index + precomputed recommendations. Cart as the canonical AP/Dynamo subsystem (vector-clock merge, tombstones). No-oversell (guarded conditional decrement + Redis TTL holds). Exactly-once orders (idempotency keys). Authorize-then-capture-on-ship. Order saga + transactional outbox + reconciliation. Multi-warehouse inventory & flash-sale hot-SKU gating. Read-your-writes, sharding, multi-region (global catalog vs regional orders). Black-Friday degradation. Fraud/bots. Frontend: SSR/ISR shell + idempotent checkout + funnel performance.
+
+**Patterns used:** Distributed Caching, CDN, KV-Store (cart/Dynamo), Seat-Reservation (no-oversell/flash-sale), Distributed Transactions (saga/idempotency), Message Queues (outbox), Search, Recommendation, Sharding & Replication, Rate Limiting, Observability
+
+**Why it's asked:**
+"Design Amazon" is one of the most common end-to-end interviews at Amazon/Meta/Google/Shopify. It ties together the most patterns of any single problem — the consistency gradient, AP cart vs CP checkout, and the order saga are the senior/staff differentiators. Payment *depth* (ledger, PSP reconciliation, chargebacks) is delegated to a dedicated **payment-system** topic (Problem 16, not yet built).
+
+**Creation checklist:**
+- [x] `README.md`
+- [x] `simple-diagram.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `diagrams.md`
+- [x] `deep-dive.md`
 
 ---
 
@@ -699,7 +730,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 12 | URL Shortener | Problem | P1 | 🔄 | Hashing, Caching |
 | 13 | Social Feed (Twitter) | Problem | P1 | ✅ | Queues, Caching, Sharding |
 | 14 | Chat System (WhatsApp) | Problem | P1 | 🔲 | Queues, WebSockets |
-| 15 | Seat Reservation | Problem | P1 | 🔄 | Caching, Locking |
+| 15 | Seat Reservation (Ticketmaster) | Problem | P1 | ✅ | Caching, Locking, QR, Frontend |
 | 16 | Ride Sharing (Uber) | Problem | P1 | 🔲 | Geospatial, WebSockets |
 | 17 | Video Streaming (Netflix) | Problem | P1 | 🔲 | CDN, Blob Storage |
 | 18 | File Storage (Drive) | Problem | P1 | ✅ | Blob Storage, Caching |
@@ -712,7 +743,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 25 | Job Scheduler | Problem | P2 | 🔲 | Distributed Locking |
 | 26 | Payment System | Problem | P2 | 🔲 | Distributed Transactions |
 | 27 | Google Maps | Problem | P3 | 🔲 | CDN, Caching, Geospatial |
-| 28 | Collaborative Editing | Problem | P3 | 🔲 | WebSockets, CRDTs |
+| 28 | Collaborative Editing (Sheets/Docs) | Problem | P3 | ✅ | WebSockets, Consensus, CRDTs/OT |
 | 29 | Observability Stack | Advanced | P3 | ✅ | All patterns |
 | 30 | Security Patterns | Advanced | P3 | 🔲 | API Design |
 | 31 | Multi-Region Architecture | Advanced | P3 | 🔲 | Replication, CDN |
@@ -721,6 +752,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 34 | Search Engine | Advanced | P3 | 🔲 | Web Crawler, Autocomplete |
 | 35 | Consensus & Coordination | Pattern | P1 | ✅ | None |
 | 36 | Storage Engines (LSM/B-Tree) | Pattern | P1 | ✅ | None |
+| 37 | E-Commerce Platform (Amazon) | Problem | P1 | ✅ | Cart/KV, Seat-Reservation, Saga, Caching, Search |
 
 ---
 
