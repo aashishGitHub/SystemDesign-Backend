@@ -13,9 +13,9 @@
 | Category | Total Topics | ✅ Done | 🔄 In Progress | 🔲 Not Started |
 |---|---|---|---|---|
 | Core Patterns | 12 | 9 | 1 | 2 |
-| Classic Problems | 19 | 10 | 3 | 6 |
+| Classic Problems | 19 | 11 | 3 | 5 |
 | Advanced Topics | 6 | 1 | 0 | 5 |
-| **Total** | **37** | **20** | **4** | **13** |
+| **Total** | **37** | **21** | **4** | **12** |
 
 > **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `web-crawler`, `search-autocomplete`.
 
@@ -577,22 +577,28 @@ Google Cloud Tasks, Cloud Scheduler, and internal batch pipeline orchestration a
 
 ---
 
-### Problem 16 — Payment System (like Stripe / Google Pay)
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/payment-system/`
+### Problem 16 — Payment System (like Stripe / Google Pay) ✅
+**Status:** ✅ Done | **Priority:** **P1** (upgraded — see below) | **Folder:** `interviews/payment-system/`
+
+**Framing:** Central split = **internal ledger truth** (exactly-once, append-only, auditable, strongly consistent — you control it) vs **external PSP reality** (unreliable, async, only *eventually* knowable). Be exact inside, defensive at the boundary, reconcile continuously. Corollary rule: **never trust a timeout — a timeout is an UNKNOWN, not a failure.** This topic **owns** the money-correctness depth that `e-commerce` and `seat-reservation` defer to it.
+
+**Priority note (2026-07-29):** upgraded P2 → P1 on evidence. A 4-agent frequency research pass ranked this **#1 of 12 remaining topics with high confidence** — the only candidate corroborated by *first-person* candidate interview reports (Blind threads naming Stripe and PayPal) rather than prep-blog consensus alone, plus Alex Xu *System Design Interview Vol 2* Ch.11, a dedicated hellointerview problem breakdown, and Grokking. All four research agents surfaced it independently.
 
 **What it covers:**
 Idempotency keys (critical). Double-spend prevention. Payment state machine (initiated→processing→completed/failed). Ledger design (double-entry bookkeeping). Reconciliation. Retry mechanics with idempotency. Chargebacks and refunds. PCI DSS compliance basics. External payment provider integration (PSP abstraction). Currency handling (avoid floating point).
 
 **Patterns used:** Distributed Transactions, Message Queues, Distributed Locking, API Design
 
-**Why Google asks this:**
-Google Pay is a Google product. Payment systems require the strongest guarantees (exactly-once, no money lost, no double charge). Idempotency keys consistently appear in final-round interviews.
+**Why it's asked:**
+Payment systems require the strongest guarantees in the whole catalogue (exactly-once, no money lost, no double charge, full auditability). Idempotency keys and the double-entry ledger consistently appear in final rounds. Reported by name at **Stripe, PayPal, Amazon, and Uber**.
 
 **Creation checklist:**
-- [ ] `README.md`
-- [ ] `questions.md`
-- [ ] `answers.md`
-- [ ] `deep-dive.md`
+- [x] `README.md`
+- [x] `simple-diagram.md`
+- [x] `questions.md` — 50 questions, 9 levels + 6 bonus
+- [x] `answers.md` — 56 answers, each with a table/code + **Key takeaway**, plus ⚡ cheatsheet
+- [x] `diagrams.md` — 11 Mermaid diagrams
+- [x] `deep-dive.md` — 🟢🟡🔴 tiers, failure modes, case notes
 
 ---
 
@@ -741,7 +747,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 23 | Ad Click Aggregation | Problem | P2 | 🔲 | Kafka, Stream Processing |
 | 24 | Leaderboard / Top-K | Problem | P2 | 🔲 | Caching (Redis) |
 | 25 | Job Scheduler | Problem | P2 | 🔲 | Distributed Locking |
-| 26 | Payment System | Problem | P2 | 🔲 | Distributed Transactions |
+| 26 | Payment System (Stripe/PayPal) | Problem | **P1** | ✅ | Distributed Transactions, Message Queues |
 | 27 | Google Maps | Problem | P3 | 🔲 | CDN, Caching, Geospatial |
 | 28 | Collaborative Editing (Sheets/Docs) | Problem | P3 | ✅ | WebSockets, Consensus, CRDTs/OT |
 | 29 | Observability Stack | Advanced | P3 | ✅ | All patterns |
