@@ -55,9 +55,9 @@ flowchart TD
 
 **What the interviewer is checking:**
 - You separate the three paths and give each its own guarantees/infra — not one monolithic service or DB.
-- Browse tolerates staleness (cache/CDN/replicas); order needs strong consistency + idempotency; track is an ephemeral firehose (pub-sub fan-out).
+- Browser tolerates staleness (cache/CDN/replicas); order needs strong consistency + idempotency; track is an ephemeral firehose (pub-sub fan-out).
 - The three actors (customer, restaurant, courier) are all first-class — the restaurant is not a passive resource.
-- The order path commits synchronously then emits events (Kafka) — fulfillment is downstream and async (Diagram 6).
+- The order path commits synchronously then emits events (Kafka) — fulfillment is  downstream and async (Diagram 6).
 
 ---
 
