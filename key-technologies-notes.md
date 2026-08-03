@@ -225,6 +225,33 @@ Copy data to N nodes for durability + read scaling + HA.
 - **Semi-sync** → wait for ≥1 follower: common middle ground.
 - **Replication lag** causes stale reads and breaks read-your-writes → route a user's reads to the leader (or pin to a version/LSN) right after they write.
 
+**RPO / RTO — the recovery targets that pick your replication mode** (pair these with the "nines"):
+- **RPO (Recovery Point Objective)** — max *data loss* tolerated, measured in time. **RPO = 0 ⇒ synchronous** (or semi-sync) replication; the write isn't ack'd until a replica has it.
+- **RTO (Recovery Time Objective)** — max *downtime* tolerated after a crash. Low RTO ⇒ **automated failover + hot standby** (auto-promote a replica), not manual recovery.
+- Rule of thumb: **RPO chooses the replication *mode*** (0 → sync); **RTO chooses the failover *automation*** (seconds → hot standby). TicketMaster wants RPO=0 (no lost booking); Nearby Friends tolerates ~5 s RPO (a lost GPS ping is fine).
+
+**Replication use-case matrix (pattern → real system → why).** Full breakdown + repo map: [`fundamentals/Use_Cases_for_Redundancy_and_Replication.md`](fundamentals/Use_Cases_for_Redundancy_and_Replication.md). Each system links to its topic folder. ⚠️ Tech names are illustrative teaching heuristics — verify against primary sources.
+
+| System | Replication pattern | Mode | Why this pattern | Folder |
+|---|---|---|---|---|
+| TinyURL | Single-leader + Redis replicas | Async | 100:1 reads → replicas serve redirects; VIP auto-failover | [url-shortener](interviews/url-shortener/) |
+| Dropbox | Reed-Solomon erasure coding + Paxos metadata | Sync (metadata) | 11-nines block durability + strict metadata accuracy | [file-storage](interviews/file-storage/) |
+| Pastebin | Multi-AZ erasure coding + DB replica | Async media / Sync DB | Durable pastes, low storage overhead, fast global reads | [file-storage](interviews/file-storage/) |
+| Instagram | Primary-replica shards + multi-region CDN | Async | Local timeline/photo reads from nearby replicas | [social-feed](interviews/social-feed/) |
+| FB Messenger | Leaderless quorum (N=3, W=2, R=2) | Quorum | Messages never lost; high cross-DC write availability | [chat-system](interviews/chat-system/) · [kv-store](interviews/kv-store/) |
+| Twitter | Kafka RF=3 + Redis replicas | Async | Durable timeline fan-out; instant feed failover | [social-feed](interviews/social-feed/) · [message-queues](interviews/message-queues/) |
+| YouTube | Multi-tier CDN dynamic replication | Async | Viral videos fan out to edge by view count (1 → 1000+) | [video-streaming](interviews/video-streaming/) · [cdn-edge](interviews/cdn-edge/) |
+| Netflix | Multi-region active-active (Cassandra) | Async (cross-region) | Evacuate a whole region without stream interruption | [video-streaming](interviews/video-streaming/) |
+| Typeahead | Immutable trie read-replica swaps | Batch / snapshot | sub-20 ms lookups from RAM, no write locks | [search-autocomplete](interviews/search-autocomplete/) |
+| API Rate Limiter | Redis Sentinel + local fallback | Async | Keep enforcing limits when a cache shard fails | [rate-limiting](interviews/rate-limiting/) |
+| Twitter Search | Inverted-index shard replicas | Async | Balance heavy search across redundant index shards | [search-autocomplete](interviews/search-autocomplete/) |
+| WebCrawler | Replicated task queues + DB sync | Async | Re-queue lost fetch tasks when a worker dies | [web-crawler](interviews/web-crawler/) |
+| FB NewsFeed | TAO multi-region graph cache | Async invalidation | Local cache reads vs primary-region writes | [social-feed](interviews/social-feed/) |
+| Yelp | Single-leader + read replicas | Async | Scale read-mostly business pages per region | *[ride-sharing](interviews/ride-sharing/) geo pattern* |
+| Nearby Friends | Ephemeral memory ring + Redis geo | Async | 100K+ GPS writes/s; speed over durability (~5 s RPO OK) | [ride-sharing](interviews/ride-sharing/) |
+| Uber | Active-active stateful (Ringpop) | Sync in-memory | Stateful failover for live trip/match sessions | [ride-sharing](interviews/ride-sharing/) |
+| TicketMaster | Leader-follower + Raft locks | Sync | RPO = 0 — never double-book a seat during a drop | [seat-reservation](interviews/seat-reservation/) |
+
 → Existing folder: `interviews/sharding-replication/`
 
 ---
@@ -354,6 +381,86 @@ You cannot operate what you cannot see. Three pillars:
 - ⚠️ **Cardinality explosion**: high-cardinality metric labels (user_id, request_id) blow up storage/cost → keep label sets bounded; put high-cardinality data in traces/logs instead.
 
 → Deep dive: `interviews/observability/`
+
+---
+
+# Part III — When to Use What (Situational / Use-Case Driven)
+
+> Parts I & II answer *"what is this tool?"* This part answers the interview question that actually earns points: *"given **this situation**, which strategy fits — and why?"* Each row is anchored to a concrete scenario from the [food-delivery](interviews/food-delivery/radio-walkthrough.md) and [e-commerce](interviews/e-commerce/radio-walkthrough.md) walkthroughs so the choice is defensible, not memorized.
+
+## 21. Which Database Fits This Situation?
+
+The senior move is **never** "SQL vs NoSQL" in the abstract — it's "this access pattern + this consistency bar → this store." Match the *property* to the *situation*:
+
+| Situation (the tell) | Store type | Concrete example | Why it wins here |
+|---|---|---|---|
+| Money, state machine, "must be exactly right" | **RDBMS (Postgres, ACID)** | Order & checkout; payment ledger | Transactions + `UNIQUE` idempotency constraint + guarded conditional writes; correctness > scale (write volume is small) |
+| "Must never reject a write," multi-device, mergeable | **AP key-value (DynamoDB/Cassandra)** | Shopping cart | Availability-first; a rejected write = lost revenue; merge concurrent versions with vector clocks / add-wins |
+| Write-heavy, ephemeral, expires fast | **In-memory + TTL (Redis)** | Courier GPS pings (125K writes/s), seat holds | Firehose must never touch the transactional DB; a lost datum is re-sent, nothing to recover |
+| Read-heavy, tolerates slight staleness | **RDBMS + read-replicas + cache** | Product catalog, restaurant/menu | Reads dominate ~1000:1 → serve from cache/replicas, primary reserved for writes |
+| Full-text / fuzzy / faceted search | **Inverted index (Elasticsearch)** | Product & restaurant/dish search | Avoids `LIKE '%..%'` scans; CDC-fed from the source DB (not the source of truth) |
+| Geospatial "what's near this lat/lng" | **Geo index (S2/H3, PostGIS, Redis GEO)** | Serviceable restaurants, courier matching | Cell-based lookup instead of scanning every row |
+| Large binary (images, video) | **Blob store (S3) + CDN**; DB holds the pointer | Product images, menu photos | Cheap, durable, offloads origin; never stream binaries through app servers |
+| Append-only, replayable, multi-consumer | **Log/stream (Kafka)** | Order events, analytics, outbox relay | Retains data → replay from offset; many independent consumer groups |
+| Write-heavy ingest, range scans | **LSM-tree engine (Cassandra/RocksDB)** | Time-series, event logs | Sequential writes; see §17 |
+| Read/range-scan-heavy, point lookups | **B-tree engine (Postgres/InnoDB)** | Orders, users, catalog | In-place reads; see §17 |
+
+> **Interview line:** *"I don't pick a database, I pick a property. This path needs [ACID / availability / expiry / search / geo] because [situation], so I'd reach for [store] — swappable for any store with that property."*
+
+## 22. Which Caching Strategy Fits?
+
+Two independent decisions: **write strategy** (how the cache and DB stay in step) and **invalidation** (how staleness is bounded).
+
+| Situation | Write strategy | Invalidation / TTL | Example |
+|---|---|---|---|
+| Read-mostly, rarely updated, large body | **Cache-aside** + **version-keyed** (immutable key) | Bump version → new key → old ages out; purge CDN by surrogate key | Product body / menu keyed by `version` / `menu_version` |
+| Volatile value, slight staleness OK | **Write-around** (write DB, cache fills on read) | **Short TTL** (5–30 s) | Price / availability overlay |
+| Must read your own write immediately | **Write-through** (cache + DB together) | Consistent by construction (slower writes) | Session, profile edits |
+| Write-heavy, can tolerate small loss window | **Write-back** (cache first, async flush) | Flush interval | High-frequency counters (risky — data-loss window) |
+| Ranked / leaderboard / sorted reads | Cache-aside with **Redis sorted sets** | Recompute or incrementally update | "Top restaurants," feed ranking |
+
+**Failure mode to always name — the thundering herd / cache stampede:** a hot key expires and 10⁶ clients miss at once. Fix with **request coalescing (single-flight)** + **jittered TTLs** (don't expire in lockstep) + **stale-while-revalidate**. This is the existential risk of the e-commerce read path (§Deep dive 1 in the walkthrough).
+
+> **Interview line:** *"Immutable content → version the cache key and cache forever. Volatile content → short TTL and re-check the source of truth at the money moment. The stock badge is a cached UX hint; overselling is prevented by the authoritative check at checkout, not the cache."*
+
+## 23. Which Replication Strategy Fits?
+
+| Situation | Strategy | Sync mode | Example |
+|---|---|---|---|
+| Single-writer truth, read scaling | **Leader–follower** | **Async** for read replicas (accept lag) | Order DB: writes → primary, browse reads → replicas |
+| Can't lose a committed write | Leader–follower | **Sync / semi-sync** (wait ≥1 follower) | Payment / ledger writes |
+| Multi-region writes, low latency everywhere | **Multi-leader** or **leaderless (Dynamo)** | Async + **conflict resolution** | Cart (leaderless AP), globally distributed writes |
+| Read-your-writes right after a write | Leader–follower, but **route the user's reads to the leader** (or pin to LSN/version) for a short window | — | "I just placed an order and want to see it" |
+| No failover step tolerable | **Leaderless quorum** (W+R>N) | Tunable per request | Dynamo-style KV / cart |
+
+**Replication lag is the trap:** async replicas serve stale reads → breaks read-your-writes. Mitigate by routing post-write reads to the leader or pinning to a version. (Depth: [sharding-replication](interviews/sharding-replication/), [kv-store](interviews/kv-store/).)
+
+## 24. Which Consistency Model Fits? (the gradient idea)
+
+The single highest-signal framing in both walkthroughs: **match consistency to the path; don't use one model everywhere.**
+
+| Path / situation | Model | Because |
+|---|---|---|
+| Browse / catalog / menu | **Eventual** | A stale price/badge is a UX blemish, not a correctness bug; buys cache + CDN + replicas |
+| Cart | **Availability-first (AP)** | A rejected write is lost revenue; reconcile concurrent versions later |
+| Checkout / inventory / payment | **Strong (CP / linearizable)** | Oversell and double-charge move real money — must never happen |
+| Fulfillment / notifications / analytics | **Async / at-least-once + idempotent** | Must happen reliably but not synchronously; a spike becomes a backlog |
+
+> **Interview line:** *"As the user moves toward the money, required consistency rises and tolerable staleness falls. Browse → eventual, cart → AP, checkout → strong, fulfillment → async. Each is a different CAP point on different infrastructure."* (See CAP/PACELC in §11.)
+
+## 25. Which Distributed-Systems Pattern Solves This Problem?
+
+| The problem (situation) | Pattern | Example |
+|---|---|---|
+| Retry / double-click must not double-charge | **Idempotency key** (`UNIQUE` in txn + stored response) | `POST /orders` |
+| Atomic action across service-owned DBs | **Saga + compensating actions** (not 2PC) | reserve→authorize→create→ship, unwound on failure |
+| "Wrote DB and queue as two steps — one failed" | **Transactional outbox** (+ CDC relay) | `order` + `OrderPlaced` in one txn |
+| Prevent overselling a finite resource | **Guarded conditional write** (`WHERE stock-reserved>=qty`, 0 rows = sold out) | Inventory / menu-item decrement |
+| Concurrent writes to different replicas | **Vector clocks + siblings** or **CRDTs** or **CAS** | Cart merge; lost-update prevention |
+| One partition takes disproportionate load | **Hot-key mitigation** (cache in front, split, key-suffix) | Viral product, dinner-rush geo-cell |
+| A dependency is failing — stop the cascade | **Circuit breaker + timeout + backoff&jitter** | PSP / downstream service calls |
+| Spike will overwhelm the system | **Backpressure / load-shed by priority + queue backlog** | Prime Day, dinner rush |
+| Size connections / threads / pools | **Little's Law** (concurrent = arrival × lifetime) | ~3M live tracking connections |
 
 ---
 
