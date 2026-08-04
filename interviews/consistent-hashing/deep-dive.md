@@ -1374,3 +1374,24 @@ Use case: user session store (stale reads are fine for 5 seconds)
 | DynamoDB choice | Consistent hashing + sloppy quorum = write availability over strict consistency |
 | Cassandra vs Redis Cluster | Cassandra: ring + vnodes + gossip; Redis: 16,384 explicit slots + manual migration |
 | Interview: "shard by user_id" | Ask: range queries? If no → consistent hash. Then: vnodes, quorum, hot key plan |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (rows 15–16 mechanism, Uber/Ringpop) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** not a replication scheme — the **placement function replication is built on**. The **preference list** (§6) is produced by walking the ring clockwise from a key's position to the next `N` **distinct** nodes; those are its replicas. Membership is maintained by **gossip** (§10) rather than a master.
+- **Mode:** whatever the quorum configuration says — this layer is mode-agnostic, which is why §7's sloppy quorum and hinted handoff can trade consistency for write availability without changing the ring at all.
+- **Why here:** it answers the question every replication scheme must answer first: **"which `N` nodes hold this key?"** — and it answers it so that adding capacity moves only ~`K/N` of the data instead of remapping everything (§1). Two details that matter in a design review. **Virtual nodes exist for failure spreading, not just balance** (§3): without them a dead node's entire share lands on its single ring successor, which then falls over too — the textbook cascading failure; with vnodes that load spreads across many peers. And **"next `N` distinct nodes" must mean distinct *failure domains*, not just distinct processes** — three replicas that happen to sit in one rack or one AZ satisfy RF=3 on paper and give you none of its protection, which is the most common way a correct-looking ring configuration fails in production.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, ring/membership cache) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** this topic isn't a cache — it's the **placement function a cache tier is built on**, plus one cache of its own: the client-side **ring/membership cache** that maps key → node without an extra network hop.
+- **Strategy:** the ring makes a **distributed cache resizable**. Under naive `hash(key) % N`, changing `N` remaps nearly every key at once — a full-fleet cache miss storm that lands entirely on your database. Consistent hashing moves only ~`K/N` keys (§1–§2), turning a capacity change from an outage into a blip. Hot keys (§13) are handled by replicating them to the next `R` nodes on the ring or by weighting vnodes.
+- **Invalidation:** a node's departure **implicitly invalidates** everything it held — no purge needed, the keys simply aren't found and get refilled. The membership cache is invalidated by **gossip (§10)** carrying a version epoch, so a stale ring is detected rather than silently misrouting.
+- **Why here:** this is the mechanism that makes Memcached/EVCache-style fleets operable — you can add capacity on a Friday afternoon. The failure mode worth naming: a **ring change during peak traffic** produces a miss burst precisely when the origin has the least headroom, so migrations (§8) should be **drained gradually** and, ideally, the new node should warm before taking full share. Note the asymmetry with data stores: when the ring moves under a *cache*, you lose speed; when it moves under a *database*, you lose the data unless it's re-replicated first.
