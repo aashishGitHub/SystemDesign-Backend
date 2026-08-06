@@ -16,6 +16,8 @@
 
 > ⚠️ Don't make broad SQL vs NoSQL comparisons. Pick one, talk about its specific properties.
 
+→ Full classification (all data-model families + CAP/PACELC placement + a pick-a-DB decision guide): [`fundamentals/Use_Cases_for_Databases.md`](fundamentals/Use_Cases_for_Databases.md).
+
 ---
 
 ## 2. Blob Storage
@@ -86,17 +88,22 @@ Client  →  S3/CDN: GET file directly
 
 ## 4. API Gateway
 - Sits in front of all services; routes requests to correct microservice
-- Handles cross-cutting concerns: **auth, rate limiting, logging**
+- An **API Gateway is an advanced L7 *reverse proxy*** — it centralizes cross-cutting concerns so services don't re-implement them
+- Handles cross-cutting concerns: **auth, rate limiting, logging**, request transforms, TLS termination
 - Almost always include in product design interviews
 - Popular: AWS API Gateway, Kong, Apigee, NGINX
+
+> → **Proxy taxonomy + use-case matrix** (forward vs reverse vs sidecar, L4 vs L7, per-system patterns for all 17 systems): [`fundamentals/Use_Cases_for_Proxies.md`](fundamentals/Use_Cases_for_Proxies.md).
 
 ---
 
 ## 5. Load Balancer
-- Distributes traffic across multiple machines (horizontal scaling)
-- **L4** (transport layer): use for persistent connections like WebSockets
-- **L7** (application layer): flexible routing, minimizes connection load — default choice for HTTP
-- Popular: AWS ELB, NGINX, HAProxy
+- A **load balancer is a *reverse proxy*** whose main job is spreading traffic across machines (horizontal scaling)
+- **L4** (transport layer): fast + dumb — routes by IP/port only; use for persistent connections like WebSockets
+- **L7** (application layer): smart + heavier — routes by header/path/cookie, decrypts TLS; default choice for HTTP
+- Popular: AWS ELB (NLB=L4, ALB=L7), NGINX, HAProxy, Envoy
+
+> → L4-vs-L7 in depth + which real system uses which: [`fundamentals/Use_Cases_for_Proxies.md`](fundamentals/Use_Cases_for_Proxies.md) §1C.
 
 ---
 
@@ -207,6 +214,7 @@ Client  →  S3/CDN: GET file directly
 - **Monotonic reads** — you never see time move backwards
 - **Consistent prefix** — you never see an answer before its question
 
+→ **Which database sits at which CAP/PACELC point** (Spanner = PC/EC, Dynamo/Cassandra = PA/EL, etc.) + how to read a PACELC label: [`fundamentals/Use_Cases_for_Databases.md`](fundamentals/Use_Cases_for_Databases.md) §3.
 → Deep dive: `interviews/distributed-transactions/`
 
 ---
@@ -410,6 +418,12 @@ The senior move is **never** "SQL vs NoSQL" in the abstract — it's "this acces
 ## 22. Which Caching Strategy Fits?
 
 Two independent decisions: **write strategy** (how the cache and DB stay in step) and **invalidation** (how staleness is bounded).
+
+**Caching use-case matrix (layers → strategy → invalidation → why).** Full breakdown + repo map: [`fundamentals/Use_Cases_for_Caching.md`](fundamentals/Use_Cases_for_Caching.md) — same 17 systems, same order, as the replication matrix in §12, so row *N* is the same product in both. Each system links to its topic folder. ⚠️ Tech names are illustrative teaching heuristics — verify against primary sources.
+
+- **The two dials:** **hit ratio** (sets *capacity*) and **freshness window** (sets *correctness*). Origin load = `QPS × (1 − hit_ratio)` — at 10⁶ QPS a **99%** hit ratio still leaves **10,000 QPS** on the DB; 99.9% leaves 1,000. **The last nine is the one that saves you.**
+- **A replica is a copy you may trust; a cache is a copy you may lose.** Losing a replica = a durability incident; losing a cache = your origin eats 100% of traffic, usually the worse outage. Corollary: **you replicate a cache to protect your database, not the data.**
+- **The senior question is "what happens when the cache is empty?"** If the origin can't survive 100% of traffic, the cache is **load-bearing capacity**, not an optimization, and needs its own capacity plan and warm-up path.
 
 | Situation | Write strategy | Invalidation / TTL | Example |
 |---|---|---|---|

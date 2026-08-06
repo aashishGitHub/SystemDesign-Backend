@@ -2,7 +2,6 @@
 
 > Keyed to [questions.md](./questions.md). Read questions first — attempt each before coming here.
 > Every answer contains code or a comparison table, plus named tradeoffs on decisions that matter.
-> Mermaid diagrams accompany the worked examples — each one is drawable on a whiteboard in under a minute, so practise redrawing them rather than only reading them.
 
 ---
 
@@ -43,26 +42,6 @@ Expected fraction remapped = (N-1) / N = 4/5 = 80%
 | 10 → 11 nodes | ~90% |
 | 100 → 101 nodes | ~99% |
 
-**Diagram — five concrete keys, one node added: four of five move.** A key stays put only when `hash % 4 == hash % 5`, which holds only for `hash mod 20 < 4`.
-
-```mermaid
-flowchart LR
-    K12["hash 12"] --> A12["N=4 · bucket 0"] ==>|"MOVES"| B12["N=5 · bucket 2"]
-    K17["hash 17"] --> A17["N=4 · bucket 1"] ==>|"MOVES"| B17["N=5 · bucket 2"]
-    K30["hash 30"] --> A30["N=4 · bucket 2"] ==>|"MOVES"| B30["N=5 · bucket 0"]
-    K99["hash 99"] --> A99["N=4 · bucket 3"] ==>|"MOVES"| B99["N=5 · bucket 4"]
-    K41["hash 41"] --> A41["N=4 · bucket 1"] -.->|"STAYS<br/>41 mod 20 = 1, and 1 &lt; 4"| B41["N=5 · bucket 1"]
-
-    classDef moved fill:#fee2e2,stroke:#dc2626
-    classDef stayed fill:#dcfce7,stroke:#16a34a
-    classDef key fill:#e0e7ff,stroke:#4338ca
-    class B12,B17,B30,B99 moved
-    class B41 stayed
-    class K12,K17,K30,K99,K41 key
-```
-
-Four of five keys land on a different node for a single node addition — that ratio is `(N-1)/N`, and it gets worse as N grows.
-
 As the cluster grows, even a single node addition forces nearly a complete reshuffle.
 
 ---
@@ -77,26 +56,6 @@ Scenario: 10M cached keys, 80% remap on node addition
 → All 8M requests fall through to the database
 → Database receives 8M unexpected queries in seconds
 → Database collapses → cascading outage
-```
-
-**Diagram — how a routing change turns the cache into a DB attack.** Note the feedback loop at the bottom: client retries on timeout amplify the very load that caused the timeout.
-
-```mermaid
-flowchart TD
-    CL["Client fleet<br/>200k reads/sec"] --> RT{"Routing table changed<br/>node added"}
-
-    RT -->|"~20% of keys<br/>still map to same node"| HIT["Cache HIT<br/>served from memory"]
-    RT -->|"~80% of keys<br/>remapped to a new owner"| MISS["Cache MISS<br/>new owner holds nothing<br/>for these keys"]
-
-    MISS --> DB[("Database")]
-    DB --> OVER["8M unexpected queries in seconds<br/>connection pool exhausted<br/>p99 latency explodes"]
-    OVER --> TO["Client timeouts"]
-    TO -.->|"retry storm amplifies load"| CL
-    OVER --> DOWN["DB collapses → cascading outage"]
-
-    style HIT fill:#dcfce7,stroke:#16a34a
-    style MISS fill:#fee2e2,stroke:#dc2626
-    style DOWN fill:#fecaca,stroke:#b91c1c
 ```
 
 This is the "thundering herd" pattern. The cache was designed to absorb load, but the remapping event converts cache capacity into a concentrated DB attack.
@@ -131,19 +90,6 @@ Ring (0 → 359, wrapping):
 
 To find which node owns a key: hash the key, then **walk clockwise** on the ring until you hit a node. That node is the owner.
 
-**Diagram — the ring as a cycle.** Arrows point clockwise. The critical reading: each node owns the arc that *ends* at its own position, and the last arc wraps through 0.
-
-```mermaid
-flowchart LR
-    A(("Node A<br/>pos 10")) -->|"arc 11 → 120<br/>owner = B"| B(("Node B<br/>pos 120"))
-    B -->|"arc 121 → 230<br/>owner = C"| C(("Node C<br/>pos 230"))
-    C -->|"arc 231 → 359 → 0 → 10<br/>owner = A · wraps through zero"| A
-
-    style A fill:#dbeafe,stroke:#1d4ed8
-    style B fill:#dcfce7,stroke:#16a34a
-    style C fill:#fed7aa,stroke:#ea580c
-```
-
 ---
 
 ### A6. Clockwise routing on the ring
@@ -168,22 +114,6 @@ hash(M) = 80  → walk clockwise from 80
 | 150 | Node C at 230 | C |
 | 240 | wraps around to Node A at 10 | A |
 
-**Diagram — four key lookups on the same ring.** Dashed arrows are lookups, not data placement: the key never moves, only the resolution walk.
-
-```mermaid
-flowchart LR
-    K1["hash = 5"] -.->|"walk cw · first node hit"| A
-    K2["hash = 80"] -.->|"walk cw past 81…119"| B
-    K3["hash = 150"] -.->|"walk cw past 151…229"| C
-    K4["hash = 240"] -.->|"walk cw past 359 · wrap through 0"| A
-
-    A(("A · 10")) -->|clockwise| B(("B · 120")) -->|clockwise| C(("C · 230")) -->|clockwise| A
-
-    style A fill:#dbeafe,stroke:#1d4ed8
-    style B fill:#dcfce7,stroke:#16a34a
-    style C fill:#fed7aa,stroke:#ea580c
-```
-
 ---
 
 ### A7. Impact of node D joining at position 180
@@ -197,32 +127,6 @@ Keys 181–230 → remain with C
 
 Fraction moved = (180 - 120) / 360 = 60/360 ≈ 16.7%
 Expected disruption (1/N) = 1/4 = 25% → actual depends on node positions
-```
-
-**Diagram — before and after D joins.** Only one edge of the ring changes. C's arc is cut in two; A's and B's arcs are byte-for-byte identical, so no key they own is touched.
-
-```mermaid
-flowchart TD
-    subgraph before["BEFORE · 3 nodes"]
-        direction LR
-        A1(("A · 10")) -->|"11–120 → B"| B1(("B · 120"))
-        B1 -->|"121–230 → C"| C1(("C · 230"))
-        C1 -->|"231–10 → A"| A1
-    end
-
-    subgraph after["AFTER · D joins at 180"]
-        direction LR
-        A2(("A · 10")) -->|"11–120 → B<br/>UNCHANGED"| B2(("B · 120"))
-        B2 -->|"121–180 → D<br/>STREAMED FROM C"| D2(("D · 180"))
-        D2 -->|"181–230 → C<br/>C keeps this half"| C2(("C · 230"))
-        C2 -->|"231–10 → A<br/>UNCHANGED"| A2
-    end
-
-    before ==>|"only C gives up data<br/>60/360 = 16.7% of the ring"| after
-
-    style D2 fill:#fef9c3,stroke:#ca8a04
-    style before fill:#f1f5f9,stroke:#64748b
-    style after fill:#f1f5f9,stroke:#64748b
 ```
 
 Only Node C is affected — it surrenders part of its range to D. Nodes A and B are completely unaffected. This is the core advantage: disruption is bounded to adjacent neighbors, not the entire cluster.
@@ -239,27 +143,6 @@ Ring (correct):  node at position max → successor is the first node (position 
                  range wraps seamlessly
 ```
 
-**Diagram — the endpoint hole the ring closes.** In the linear space the tail arc has no successor to resolve to, so it needs a special case in every lookup. Wrapping deletes the special case.
-
-```mermaid
-flowchart TD
-    subgraph lin["LINEAR space · endpoint problem"]
-        direction LR
-        L0["position 0"] --> LA["A · 10"] --> LB["B · 120"] --> LC["C · 230"] --> LX["positions 231–359<br/>no node clockwise<br/>owner UNDEFINED"]
-    end
-
-    subgraph rng["RING · same nodes, no special case"]
-        direction LR
-        RA(("A · 10")) --> RB(("B · 120")) --> RC(("C · 230"))
-        RC -->|"231–359 wrap through 0<br/>successor = A"| RA
-    end
-
-    lin ==>|"close the line into a circle"| rng
-
-    style LX fill:#fee2e2,stroke:#dc2626
-    style rng fill:#dcfce7,stroke:#16a34a
-```
-
 ---
 
 ## Level 3 — Virtual Nodes
@@ -274,24 +157,13 @@ Example (ring 0–359):
   NodeB = 8
   NodeC = 190
 
-Key ranges (each node owns the arc ending at its own position):
-  NodeA: 191–5   (wrap-around) = 175 positions → 48.6% of ring
-  NodeB: 6–8     = 3 positions  →  0.8% of ring
-  NodeC: 9–190   = 182 positions → 50.6% of ring
-                                   ----
-                                   360 positions total
+Key ranges:
+  NodeA: 191–5   (wrap-around) = 174 positions → 48% of ring
+  NodeB: 6–8     = 3 positions  →  1% of ring
+  NodeC: 9–190   = 182 positions → 51% of ring
 
-NodeB is handling under 1% of keys; NodeA and NodeC are handling ~50% each.
+NodeB is handling 1% of keys; NodeA and NodeC are handling ~50% each.
 NodeB is massively underutilized. NodeA and NodeC are hot.
-```
-
-**Diagram — the same numbers as ring share.** A and B hashed 3 positions apart purely by accident, and that accident *is* B's entire allocation — its slice is too thin to even render as a wedge.
-
-```mermaid
-pie showData title Ring share — 3 physical nodes, one position each
-    "NodeA · arc 191→5 · 175 positions" : 175
-    "NodeB · arc 6→8 · 3 positions" : 3
-    "NodeC · arc 9→190 · 182 positions" : 182
 ```
 
 The smaller the cluster, the worse this statistical accident can be.
@@ -313,23 +185,6 @@ Ring positions:
 
 Each physical node now owns multiple small, interleaved arcs instead of one large arc.
 By the law of large numbers, with 150+ vnodes per node, the distribution approaches even.
-```
-
-**Diagram — the same 3 machines, now interleaved.** Colour = physical node. Walk the cycle and note that no machine ever holds two adjacent arcs, so no machine can accumulate one dominant slice.
-
-```mermaid
-flowchart LR
-    A1(("A-1<br/>10")) --> B1(("B-1<br/>30")) --> C1(("C-1<br/>60")) --> A2(("A-2<br/>95"))
-    A2 --> B2(("B-2<br/>120")) --> C2(("C-2<br/>150")) --> A3(("A-3<br/>200")) --> B3(("B-3<br/>220"))
-    B3 --> C3(("C-3<br/>245")) --> A4(("A-4<br/>310")) --> B4(("B-4<br/>330")) --> C4(("C-4<br/>350"))
-    C4 -->|"wrap through 0"| A1
-
-    classDef pa fill:#dbeafe,stroke:#1d4ed8
-    classDef pb fill:#dcfce7,stroke:#16a34a
-    classDef pc fill:#fed7aa,stroke:#ea580c
-    class A1,A2,A3,A4 pa
-    class B1,B2,B3,B4 pb
-    class C1,C2,C3,C4 pc
 ```
 
 If any one vnode arc is large, it's balanced by smaller arcs elsewhere on the same physical node.
@@ -359,26 +214,6 @@ The more vnodes per physical node, the tighter the statistical distribution. 256
 | Rebalance on node join/leave | Fewer data transfers | Many small transfers — easier to parallelize but more coordination |
 | Bootstrap time for new node | Faster (fewer ranges to stream) | Slower (500 range endpoints to populate) |
 | Failure blast radius | Large (one node failure = large dead range) | Small (one node failure = many small ranges scattered) |
-
-**Diagram — the same decision, both consequences.** Both branches lead to the same tradeoff node: whatever you gain in recovery blast radius you pay for in bootstrap and metadata cost.
-
-```mermaid
-flowchart TD
-    V{"vnodes per<br/>physical node"}
-
-    V -->|"LOW · 10"| LOW["Distribution: high variance<br/>Ring metadata: 10 tokens/node<br/>Bootstrap: fast · 10 ranges to stream<br/>Node dies: 10 LARGE gaps"]
-    V -->|"HIGH · 500"| HIGH["Distribution: near-uniform<br/>Ring metadata: 500 tokens/node<br/>Bootstrap: slow · 500 ranges to stream<br/>Node dies: 500 TINY gaps, scattered"]
-
-    LOW --> LC["Recovery: few replicas do<br/>a lot of extra work each"]
-    HIGH --> HC["Recovery: many replicas each<br/>absorb a sliver — load spreads"]
-
-    LC --> T["TRADEOFF<br/>failure blast radius<br/>vs<br/>bootstrap + coordination cost"]
-    HC --> T
-
-    style LOW fill:#fee2e2,stroke:#dc2626
-    style HIGH fill:#dcfce7,stroke:#16a34a
-    style T fill:#fef9c3,stroke:#ca8a04
-```
 
 **Tradeoff: Failure Blast Radius vs Bootstrap Cost.** With 500 vnodes, a single node failure creates 500 small gaps distributed around the ring. Each gap is small and quickly covered by replicas. With 10 vnodes, a single node failure creates 10 larger gaps — each larger gap means more keys are served from a replica for longer.
 
@@ -413,29 +248,6 @@ Step 5 — Cleanup:
   (to allow stragglers and repair operations to complete).
 ```
 
-**Diagram — the join as a message sequence.** The control-flow point interviewers probe: the ring is only updated at step 7, *after* the data is verified. Until then the old owner is still authoritative, which is why a join causes no unavailability.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant D as New node D
-    participant G as Cluster gossip
-    participant C as Current owner C
-    participant CO as Coordinator / clients
-
-    Note over D: Step 1 — compute vnode positions<br/>hash(node_id + "-" + vnode_index)
-    D->>G: announce claimed positions
-    G->>C: D claims arc 121–180, your predecessor range
-    Note over D,C: Step 3 — bootstrap streaming, background
-    C->>D: stream key-values for 121–180
-    C->>CO: STILL AUTHORITATIVE — keeps serving 121–180
-    D->>D: verify range checksum
-    D->>G: Step 4 — I now own 121–180
-    G->>CO: ring state updated via gossip
-    CO->>D: reads and writes for 121–180 route here
-    Note over C: Step 5 — drop local copy of 121–180<br/>only after a safety window
-```
-
 ---
 
 ### A14. Graceful node departure vs crash
@@ -457,31 +269,6 @@ sequenceDiagram
 4. Successor nodes are now primary for those ranges
 5. If replication factor > 1: successors already hold replica copies → serve immediately
 6. If RF=1: data is unavailable until recovery (read repair or restore from backup)
-```
-
-**Diagram — one departure, two control flows.** The whole difference is *who initiates*: in the graceful path the leaving node drives the transfer; in the crash path the cluster must first agree the node is gone, and survivability then depends entirely on replication factor.
-
-```mermaid
-flowchart TD
-    L{"Node B stops<br/>serving its ranges"}
-
-    L -->|"GRACEFUL<br/>decommission"| G1["B announces intent to leave"]
-    G1 --> G2["For each vnode: find successor<br/>= next node clockwise"]
-    G2 --> G3["B proactively streams data<br/>while still serving reads"]
-    G3 --> G4["Ring updated, B removed"]
-    G4 --> G5["No interruption<br/>no reliance on replicas"]
-
-    L -->|"CRASH<br/>no warning"| X1["Heartbeats stop arriving"]
-    X1 --> X2["Gossip marks B SUSPECTED<br/>phi-accrual score rising"]
-    X2 --> X3["Score past threshold → DEAD<br/>10–30s typical"]
-    X3 --> X4["Ring updated, successors<br/>become primary for B's arcs"]
-    X4 --> RF{"Replication<br/>factor?"}
-    RF -->|"RF ≥ 3"| OK["Successors already hold replicas<br/>→ serve immediately, repair later"]
-    RF -->|"RF = 1"| BAD["Range UNAVAILABLE until recovery<br/>data loss if no backup"]
-
-    style G5 fill:#dcfce7,stroke:#16a34a
-    style OK fill:#fef9c3,stroke:#ca8a04
-    style BAD fill:#fee2e2,stroke:#dc2626
 ```
 
 | Aspect | Graceful | Crash |
@@ -532,36 +319,6 @@ Writes during transfer are sent to BOTH nodes (dual-write window):
   - Ensures new owner has all writes even if transfer overlaps with incoming mutations
 ```
 
-**Diagram — two-phase ownership with a dual-write window.** The invariant to state out loud: at every instant exactly one node is authoritative for reads, while writes are duplicated so the new owner can never miss a mutation that lands mid-stream.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant CO as Coordinator
-    participant C as Old owner C
-    participant D as New owner D
-
-    rect rgb(219, 234, 254)
-    Note over CO,D: PHASE 1 — transfer in progress · C authoritative
-    CO->>C: read k
-    C-->>CO: value
-    CO->>C: write k
-    CO->>D: write k also — dual-write window
-    C->>D: stream historical range
-    Note over D: SHADOW MODE<br/>accepts writes, serves NO reads
-    end
-
-    rect rgb(220, 252, 231)
-    Note over CO,D: PHASE 2 — transfer verified · D authoritative
-    D->>CO: ring update — D owns the range
-    CO->>D: read k
-    D-->>CO: value
-    CO->>C: stray in-flight request
-    C->>D: forward during grace window
-    Note over C: stops serving, then deletes range
-    end
-```
-
 ---
 
 ## Level 5 — Replication on the Ring
@@ -578,28 +335,7 @@ Preference list for K: [B, vB2 (skip — same physical as B), C, A]
                      = [B, C, A] (3 distinct physical nodes)
 ```
 
-**Diagram — building the preference list by walking clockwise and skipping duplicates.** Green = accepted into the list, red dashed = skipped because that vnode belongs to a machine already in the list.
-
-```mermaid
-flowchart LR
-    K["key K<br/>hash = 75"] -.->|"first node clockwise"| B
-
-    B(("B · 80<br/>machine B")) -->|"next cw"| V1(("vB2 · 140<br/>machine B"))
-    V1 -->|"next cw"| C(("C · 190<br/>machine C"))
-    C -->|"next cw"| V2(("vC2 · 260<br/>machine C"))
-    V2 -->|"next cw, wrap"| A(("A · 10<br/>machine A"))
-    A --> R["Preference list, N = 3<br/>[ B, C, A ]<br/>3 DISTINCT physical machines"]
-
-    classDef keep fill:#dcfce7,stroke:#16a34a,stroke-width:2px
-    classDef skip fill:#fee2e2,stroke:#dc2626,stroke-dasharray: 5 3
-    class B,C,A keep
-    class V1,V2 skip
-    style R fill:#dbeafe,stroke:#1d4ed8
-```
-
 Virtual node duplicates from the same physical machine are skipped to ensure the data is on 3 different physical servers, not 3 virtual tokens on the same machine.
-
-Skipping matters because vnodes make same-machine collisions likely: with 256 tokens per node, the next clockwise token very often belongs to a machine you already hold. Without the skip, "RF=3" could mean three copies on one server — one power supply away from total loss for that key.
 
 ---
 
@@ -621,38 +357,6 @@ Example with N=3:
   (W=3, R=1): W+R=4 > 3 ✅ Strong consistency (but write latency is high)
   (W=1, R=2): W+R=3 = 3 ✗ NOT strong (no guaranteed overlap)
   (W=1, R=1): W+R=2 < 3 ✗ NOT strong (eventual consistency only)
-```
-
-**Diagram — why the inequality is really a pigeonhole argument.** Left: write set and read set must share at least one replica, so the read is guaranteed to *see* v2. Right: with W=1, R=2 the two sets can be disjoint and the read returns only stale copies.
-
-```mermaid
-flowchart TD
-    subgraph good["W = 2, R = 2 · W+R = 4 > N = 3"]
-        direction TB
-        W1["WRITE v2<br/>acks needed: 2"] --> G1["Replica 1 · v2"]
-        W1 --> G2["Replica 2 · v2"]
-        G3["Replica 3 · v1 stale"]
-        RD1["READ<br/>responses needed: 2"] --> G2
-        RD1 --> G3
-        G2 --> OV["OVERLAP = Replica 2<br/>read set contains v2<br/>→ latest value wins"]
-    end
-
-    subgraph bad["W = 1, R = 2 · W+R = 3 = N · NOT strong"]
-        direction TB
-        W2["WRITE v2<br/>acks needed: 1"] --> B1["Replica 1 · v2"]
-        B2["Replica 2 · v1 stale"]
-        B3["Replica 3 · v1 stale"]
-        RD2["READ<br/>responses needed: 2"] --> B2
-        RD2 --> B3
-        B3 --> NOV["NO OVERLAP possible<br/>read returns v1<br/>→ stale read"]
-    end
-
-    good ~~~ bad
-
-    style good fill:#f0fdf4,stroke:#16a34a
-    style bad fill:#fef2f2,stroke:#dc2626
-    style OV fill:#dcfce7,stroke:#16a34a
-    style NOV fill:#fee2e2,stroke:#dc2626
 ```
 
 | W | R | W+R | Consistency | Use case |
@@ -679,28 +383,6 @@ Sloppy quorum (W=2): write to A and D (D is not in K's preference list but is av
   → D stores the write with a hint: "this belongs to B, deliver when B recovers."
 ```
 
-**Diagram — the write path when a preference-list node is down.** D's ack is what makes W=2 achievable; the hint is what keeps the substitution temporary rather than permanent drift.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant CL as Client
-    participant CO as Coordinator
-    participant A as Node A · in pref list
-    participant B as Node B · in pref list, DOWN
-    participant D as Node D · substitute, not in pref list
-
-    CL->>CO: write user:42
-    CO->>A: replicate
-    A-->>CO: ack — 1 of W=2
-    CO->>B: replicate
-    Note over B: unreachable · gossip says DOWN
-    CO->>D: replicate + hint "this belongs to NodeB"
-    D-->>CO: ack — 2 of W=2
-    CO-->>CL: write SUCCEEDED
-    Note over CO,D: A strict quorum would have blocked here.<br/>Cost: a strict read of [A, C] can miss<br/>the value now sitting on D.
-```
-
 **Tradeoff: Availability vs Strict Consistency.** Sloppy quorum sacrifices the guarantee that the write is on the correct preference list nodes. During the window where B is down and D holds the hint, a strict quorum read to [A, C] might miss the value that was written to D. This is an explicit availability-over-consistency choice — the DynamoDB/Cassandra model.
 
 ---
@@ -725,29 +407,6 @@ When NodeB recovers and rejoins the ring:
 2. NodeD delivers the hinted writes to NodeB
 3. NodeB integrates the data (last-write-wins or version vector merge)
 4. NodeD deletes the local hint copies
-
-**Diagram — hint delivery, and the fallback when it never happens.** The hint TTL is the reason anti-entropy repair still has to exist: hinted handoff is best-effort, repair is the backstop.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant D as Node D · holds hints
-    participant G as Gossip
-    participant B as Node B · recovering
-
-    Note over D: local store: user:42 with<br/>hint.intended_node = NodeB
-    B->>G: rejoin, heartbeats resume
-    G->>D: NodeB is UP
-    D->>B: deliver hinted writes
-    B->>B: integrate — last-write-wins<br/>or version-vector merge
-    B-->>D: ack
-    D->>D: delete local hint copies
-
-    alt B stays down past hint TTL · ~3h in Cassandra
-        D->>D: hints DROPPED — gap now invisible to handoff
-        Note over D,B: Backstop: anti-entropy repair<br/>Merkle-tree diff between replicas<br/>rediscovers and heals the divergence
-    end
-```
 
 If NodeB never recovers: the hints are held for a configurable window (e.g., 3 hours in Cassandra), then dropped. If durability requires it, anti-entropy (Merkle tree reconciliation) can catch the gap during repair.
 
@@ -800,27 +459,6 @@ Dynamo's solution — combination of:
    concurrent writes.
 ```
 
-**Diagram — the four mechanisms are one pipeline, not four options.** Each handles a longer failure horizon than the one before it: seconds → hours → days → "we diverged and must merge".
-
-```mermaid
-flowchart LR
-    F["Node B fails"] --> SQ["1 · SLOPPY QUORUM<br/>write redirected to substitute D<br/>horizon: immediate"]
-    SQ --> HH["2 · HINTED HANDOFF<br/>D stores hint for B<br/>horizon: hint TTL, hours"]
-    HH --> Q{"Does B return<br/>before hints expire?"}
-
-    Q -->|yes| DEL["hints delivered<br/>B is current again"]
-    Q -->|"no · long outage,<br/>disk replaced"| AE["3 · ANTI-ENTROPY<br/>Merkle-tree diff between replicas<br/>horizon: unbounded"]
-
-    DEL --> VC["4 · VECTOR CLOCKS<br/>detect concurrent versions that<br/>neither dominates the other"]
-    AE --> VC
-    VC --> APP["Divergence returned to the app<br/>e.g. merge two shopping carts<br/>= availability chosen over consistency"]
-
-    style SQ fill:#dbeafe,stroke:#1d4ed8
-    style HH fill:#dcfce7,stroke:#16a34a
-    style AE fill:#fed7aa,stroke:#ea580c
-    style APP fill:#fef9c3,stroke:#ca8a04
-```
-
 **Tradeoff: Availability vs Strict Consistency (the Dynamo Choice).** Amazon explicitly chose availability over consistency for Dynamo. The shopping cart must never fail to add an item even if a node is down. Occasional divergent versions (two users added items to the same cart in a partition) are resolved at read time by returning both versions and asking the application to reconcile. This is the CAP theorem made concrete.
 
 ---
@@ -836,26 +474,6 @@ Each node owns a contiguous range of slots:
   Node1: slots 0–5460
   Node2: slots 5461–10922
   Node3: slots 10923–16383
-```
-
-**Diagram — slots are a fixed indirection layer between key and node.** The key→slot map never changes; only the slot→node map does. That is exactly what makes a migration an explicit, auditable operation.
-
-```mermaid
-flowchart TD
-    K["key user:42"] --> H["CRC16(key) mod 16384"]
-    H --> S["slot number · 0–16383<br/>FIXED for this key forever"]
-    S --> MAP{"slot → node map<br/>the only thing that moves"}
-
-    MAP --> N1["Node1 · slots 0–5460"]
-    MAP --> N2["Node2 · slots 5461–10922"]
-    MAP --> N3["Node3 · slots 10923–16383"]
-
-    N2 -.->|"add Node4: migrate a<br/>named slot range"| MIG["MIGRATE slots 5461–6000<br/>Node2 → Node4"]
-    MIG --> RED["During the move, clients get<br/>MOVED / ASK redirects<br/>→ no lost requests"]
-
-    style S fill:#dbeafe,stroke:#1d4ed8
-    style MAP fill:#fef9c3,stroke:#ca8a04
-    style RED fill:#dcfce7,stroke:#16a34a
 ```
 
 **Why 16,384 and not a ring?**
@@ -894,32 +512,6 @@ Consistent hashing: same URL always goes to the same edge server (unless topolog
 → When an edge server is added/removed: only its URL range is affected
 ```
 
-**Diagram — the same object requested three times, under both routing schemes.** The metric that changes is origin egress: N copies cached means N origin fetches and N× the storage for one object.
-
-```mermaid
-flowchart TD
-    subgraph rr["Round-robin / random edge selection"]
-        direction TB
-        U1["3 requests for<br/>/images/logo.png"] --> LB["LB picks any edge"]
-        LB --> E1["Edge1 · caches logo.png"]
-        LB --> E2["Edge2 · caches logo.png"]
-        LB --> E3["Edge3 · caches logo.png"]
-        E1 --> DUP["No cache affinity<br/>3 origin fetches for 1 object<br/>object duplicated across edges<br/>→ low hit rate, high origin egress"]
-        E2 --> DUP
-        E3 --> DUP
-    end
-
-    subgraph ch["Consistent hashing on the cache key"]
-        direction TB
-        U2["3 requests for<br/>/images/logo.png"] --> HR["hash('/images/logo.png') = 183<br/>walk clockwise"]
-        HR --> E33["Edge3 · pos 200<br/>ALWAYS this edge for this URL"]
-        E33 --> AFF["Cache affinity<br/>1 origin fetch, 2 hits<br/>one copy in the fleet<br/>→ add/remove an edge affects<br/>only that edge's URL arc"]
-    end
-
-    style DUP fill:#fee2e2,stroke:#dc2626
-    style AFF fill:#dcfce7,stroke:#16a34a
-```
-
 **CDN-specific concern:** Consistent hashing provides cache affinity for reads. For writes (cache invalidation), all edge servers holding the content must be invalidated — CDNs use a separate invalidation broadcast mechanism, not the ring.
 
 ---
@@ -934,25 +526,6 @@ Consistent hashing distributes **keys** evenly across nodes. But if one key rece
 Example: celebrity user_id=1 is mentioned in 1M posts in 1 hour.
 hash("user:1") → Node C handles all 1M cache lookups.
 Consistent hashing has no mechanism to distribute load for a single key.
-```
-
-**Diagram — determinism is the feature and the problem.** Consistent hashing guarantees the same key always resolves to the same node; a hot key turns that guarantee into a funnel.
-
-```mermaid
-flowchart TD
-    T["Traffic mix<br/>user:1 → 1M req/sec<br/>every other key → 10 req/sec"]
-    T --> R["Ring lookup · deterministic by design"]
-
-    R -->|"hash('user:1') = one position"| C["Node C<br/>100% of the hot traffic<br/>SATURATED"]
-    R -->|"millions of cold keys"| A["Node A<br/>near idle"]
-    R -->|"millions of cold keys"| B["Node B<br/>near idle"]
-
-    C --> WHY["One key = one hash = one position = one owner.<br/>Adding nodes does not help:<br/>more vnodes still resolve user:1 to a single arc."]
-
-    style C fill:#fee2e2,stroke:#dc2626,stroke-width:2px
-    style A fill:#f1f5f9,stroke:#64748b
-    style B fill:#f1f5f9,stroke:#64748b
-    style WHY fill:#fef9c3,stroke:#ca8a04
 ```
 
 | Problem | What Consistent Hashing Fixes | What It Does Not Fix |
@@ -980,17 +553,7 @@ Resulting key distribution:
   128GB node: 512 / (128+512) = 80% of keys
 ```
 
-**Diagram — vnode count is the weight dial.** Equal vnodes on unequal hardware gives 50/50 key share, which overloads the small node at 32GB while the large node idles. Proportional vnodes align key share with capacity.
-
-```mermaid
-pie showData title Key share with weighted vnodes — matches the 1:4 capacity ratio
-    "32GB node · 128 vnodes · 20% of keys" : 128
-    "128GB node · 512 vnodes · 80% of keys" : 512
-```
-
 This matches the relative memory capacity (1:4 ratio). Cassandra supports this via the `cassandra.yaml` `initial_token` override or through the `allocate_tokens_for_keyspace` option.
-
-Caveat worth naming in an interview: this balances *key share*, which tracks storage and memory well. It does not balance request rate — if the small node happens to own the hotter 20% of keys, weighting by capacity alone will not save it.
 
 ---
 
@@ -1006,33 +569,6 @@ Timeline:
   T=8s: NodeB rejoins → Ring rebalances again → NodeB reclaims its ranges
   T=9s: NodeB disappears again (flapping)
   ...
-```
-
-**Diagram — the cycle that never settles.** Every arrow out of `Dead` or back into `Up` costs a full data-streaming round. The loop is self-sustaining because the streaming load itself makes heartbeats more likely to be missed.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Up
-    Up --> Suspected: heartbeats missed
-    Suspected --> Up: heartbeat resumes in time
-    Suspected --> Dead: phi score past threshold
-    Dead --> Rebalancing: ring updated, successors take arcs
-    Rebalancing --> Rejoining: NodeB returns, was only partitioned
-    Rejoining --> Up: reclaims arcs, streams data AGAIN
-    note right of Up
-        back to Up closes the loop:
-        the next missed heartbeat
-        starts the whole lap again
-    end note
-
-    note right of Rebalancing
-        each lap costs:
-        data streaming both ways
-        gossip storm
-        coordinator churn
-        streaming load makes the
-        next missed heartbeat likelier
-    end note
 ```
 
 Each oscillation triggers data streaming, gossip propagation, and cluster state changes — burning CPU, network bandwidth, and coordinator capacity. Detection is hard because each individual event looks like a normal join/leave.
@@ -1077,41 +613,6 @@ Detection methods:
 | Hotspot resistance | Strong (random placement avoids sequential hot spots) | Weak (sequential keys → one shard gets all writes) |
 | Rebalance complexity | Automatic via vnodes | Manual or semi-automatic split/merge |
 | Use case fit | Key-value, cache, session store | Time-series, sorted data, range scans |
-
-**Diagram — one time-range query under both schemes.** The two failure modes are mirror images: hashing scatters the scan, range sharding concentrates the writes.
-
-```mermaid
-flowchart TD
-    Q["Query: all events between<br/>09:00 and 09:04"]
-
-    Q --> HS
-    Q --> RS
-
-    subgraph HS["Consistent hashing on the timestamp key"]
-        direction TB
-        H1["09:00 → Node C"]
-        H2["09:01 → Node A"]
-        H3["09:02 → Node B"]
-        H4["09:03 → Node A"]
-        H5["09:04 → Node C"]
-        HV["Read: scatter-gather across ALL nodes<br/>slowest node sets latency<br/>Write: today's events spread evenly<br/>→ no write hotspot"]
-        H1 --> HV
-        H2 --> HV
-        H3 --> HV
-        H4 --> HV
-        H5 --> HV
-    end
-
-    subgraph RS["Range sharding on the timestamp"]
-        direction TB
-        R1["09:00–09:59<br/>ALL rows adjacent on Shard 2"]
-        RV["Read: one sequential scan, one shard<br/>Write: every current write lands<br/>on Shard 2 → HOTSPOT<br/>and Shards 0–1 sit idle"]
-        R1 --> RV
-    end
-
-    style HV fill:#fef9c3,stroke:#ca8a04
-    style RV fill:#fef9c3,stroke:#ca8a04
-```
 
 **Choose consistent hashing when:** you need to look up individual keys by ID with no range queries (user profile cache, session store, DynamoDB key-value access).
 
@@ -1163,36 +664,7 @@ Phase 3 — Cleanup:
   7. Old nodes can be repurposed or decommissioned.
 ```
 
-**Diagram — the read and write paths during Phase 1.** The read fallback is what makes the migration invisible: a miss on the new ring is a miss, not an error, and serving it also warms the new ring.
-
-```mermaid
-flowchart TD
-    subgraph P1["PHASE 1 — dual-write + read-through fallback"]
-        direction TB
-        RQ["READ k"] --> CH{"ring node has k?"}
-        CH -->|HIT| SV["serve from ring node"]
-        CH -->|MISS| MOD["read from modulo node"]
-        MOD --> FILL["serve to client<br/>AND populate ring node<br/>→ ring warms as traffic flows"]
-
-        WQ["WRITE k"] --> BOTH["write to BOTH:<br/>modulo node + ring node<br/>keeps both systems current"]
-    end
-
-    P1 ==>|"hold for at least cache TTL + buffer<br/>so cold keys either expire or get read once"| P2
-
-    subgraph P2["PHASE 2 — cutover, one flag at a time"]
-        direction TB
-        S1["disable modulo fallback reads<br/>ring is now authoritative"] --> S2["disable dual-writes<br/>ring only"]
-    end
-
-    P2 --> P3["PHASE 3 — delete modulo routing code<br/>decommission or repurpose old nodes"]
-
-    style FILL fill:#dcfce7,stroke:#16a34a
-    style P3 fill:#dbeafe,stroke:#1d4ed8
-```
-
 **Key risk:** During Phase 1, a write goes to both systems but a read hits the consistent hash node (which may not have old data yet). The modulo fallback handles this. Any key that has been read at least once will be populated in the new system.
-
-Rollback is the reason the flags are separated: while dual-writes are still on, reverting reads to the modulo path is a config change, not a data recovery exercise.
 
 ---
 
@@ -1236,26 +708,6 @@ Option 2: Key splitting / sharding the hot key
 Option 3: Read replica for that specific key
   Dedicate 2–3 cache nodes as read replicas for identified hot keys.
   Coordinator routes hot key reads round-robin across replicas.
-```
-
-**Diagram — three ways to break the funnel, each paying with a different currency.** Read the leaf labels as the price tag: staleness, write amplification, or dedicated hardware.
-
-```mermaid
-flowchart LR
-    HK["user:1 — 100x traffic<br/>ring cannot spread a single key"]
-
-    HK --> O1["OPTION 1 · L1 in-process cache<br/>LRU on every API server<br/>hot key served from local RAM"]
-    HK --> O2["OPTION 2 · key splitting<br/>user:1:shard:0 … :9<br/>write fan-out to all 10<br/>read picks one · request_id mod 10"]
-    HK --> O3["OPTION 3 · dedicated read replicas<br/>2–3 nodes for identified hot keys<br/>coordinator round-robins reads"]
-
-    O1 --> C1["PRICE: staleness up to TTL<br/>1–5s · fine for a profile blob<br/>no extra writes"]
-    O2 --> C2["PRICE: 10x write amplification<br/>reads stay consistent<br/>needs hot-key detection logic"]
-    O3 --> C3["PRICE: replication lag +<br/>dedicated capacity<br/>needs a hot-key registry"]
-
-    style HK fill:#fee2e2,stroke:#dc2626
-    style C1 fill:#fef9c3,stroke:#ca8a04
-    style C2 fill:#fef9c3,stroke:#ca8a04
-    style C3 fill:#fef9c3,stroke:#ca8a04
 ```
 
 | Option | Write overhead | Read distribution | Staleness |
