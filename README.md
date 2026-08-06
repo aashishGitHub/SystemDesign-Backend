@@ -4,12 +4,14 @@ A comprehensive collection of real-time communication implementations and system
 
 ## 📚 Table of Contents
 
-- [Overview](#overview)
-- [Interview Study Materials](#interview-study-materials)
-- [Demos](#demos)
-- [Quick Comparison](#quick-comparison)
-- [Getting Started](#getting-started)
-- [Learning Path](#learning-path)
+- [Overview](#-overview)
+- [Fundamentals](#-fundamentals)
+- [Patterns](#-patterns)
+- [Interview Study Materials](#-interview-study-materials)
+- [Demos](#-demos)
+- [Quick Comparison](#-quick-comparison)
+- [Getting Started](#-getting-started)
+- [Learning Path](#-learning-path)
 
 ---
 
@@ -18,6 +20,55 @@ A comprehensive collection of real-time communication implementations and system
 This repository contains:
 1. Working implementations of real-time communication patterns (Long Polling, SSE)
 2. Structured system design interview study materials — beginner to architect level
+
+---
+
+## 🧱 Fundamentals
+
+Located in [`fundamentals/`](./fundamentals/README.md) — twenty **brutally short** single-concept primers (Bloom filters, quorum, leader/follower, WAL, segmented log, high-water mark, lease, heartbeat, gossip, phi accrual, split brain, fencing, checksum, vector clocks, CAP/PACELC, hinted handoff, read repair, Merkle trees, consistent hashing) plus longer standalone deep dives (circuit breaker, chaos monkey) and the use-case survey docs. Each primer has an analogy, the one subtlety that trips people up, 4–5 interview questions with real answers, and links out to the `interviews/` topic that uses it in a full system.
+
+Start here: [`fundamentals/README.md`](./fundamentals/README.md)
+
+---
+
+## 🧩 Patterns
+
+Located in [`patterns/`](./patterns/README.md) — eight **in-depth** write-ups of the recurring sub-problems that show up across many different system design questions. A pattern sits between a fundamental (one concept) and an interview topic (one whole system):
+
+```
+fundamentals/  one concept, 2 min  →  patterns/  one recurring sub-problem  →  interviews/  one whole system
+```
+
+| Pattern | The one-line version |
+|---|---|
+| [Real-Time Updates](./patterns/realtime-updates.md) | Two problems, not one: client⇄server transport, *and* routing the event to the server holding that connection |
+| [Dealing with Contention](./patterns/dealing-with-contention.md) | A ladder: design the race away → conditional write → OCC → locks → distributed locks + fencing |
+| [Multi-Step Processes](./patterns/multi-step-processes.md) | No transaction spans services — sagas, persisted state machines, outbox, durable execution |
+| [Scaling Reads](./patterns/scaling-reads.md) | Diagnose → index → vertical → cache → CDN → replicas → precompute. Sharding is *last* |
+| [Scaling Writes](./patterns/scaling-writes.md) | Write **fewer** times, spread across owners, absorb bursts. Same key ⇒ sharding won't help |
+| [Handling Large Blobs](./patterns/large-blobs.md) | Metadata through your API; bytes never through your API. Presigned URLs, multipart, state sync |
+| [Managing Long-Running Tasks](./patterns/long-running-tasks.md) | Accept → enqueue → `202` + status URL → worker. Visibility timeouts, poison messages, DLQs |
+| [ZooKeeper & coordination](./patterns/zookeeper.md) | The primitive the others bottom out in — znodes, ZAB, and why reads aren't linearizable |
+
+Each file ends with a **decision framework**, a **pattern → repo topic** map linking the exact `interviews/` section that uses it, real-world cases, 10–13 interview questions with full answers, and a **cheat sheet** for last-minute revision. The folder README also has a **reverse index**: given an interview question ("design Uber"), which patterns does it need?
+
+Start here: [`patterns/README.md`](./patterns/README.md)
+
+---
+
+## 🧭 Method & Cloud Mapping
+
+Located in [`docs/`](./docs/) — the *how to work* layer, sitting alongside the *what to know* layers above.
+
+| File | What it's for |
+|---|---|
+| [`docs/RADIO_FRAMEWORK.md`](./docs/RADIO_FRAMEWORK.md) | How to **perform in the room**: R·A·D·I·O timeboxing, the estimation toolkit, how to name tech without name-dropping, and the pre-interview revision routine |
+| [`docs/AWS_SERVICE_MAP.md`](./docs/AWS_SERVICE_MAP.md) | For every building block: the **primitive → AWS service → native/OSS** mapping, plus the per-service gotchas, the patterns→AWS realization table, and what AWS *doesn't* give you |
+| [`docs/instructions.md`](./docs/instructions.md) | How to **author** an `interviews/<topic>/` folder so every topic looks and teaches the same way |
+
+**The repo's tech-naming convention** (from `AWS_SERVICE_MAP.md` §0): say the **primitive** first, the **AWS service** second, the **swap** third — *"I need an at-least-once work queue with a visibility timeout and a DLQ; on AWS that's SQS; self-hosted it's RabbitMQ."* Primitive-first keeps the same sentence usable in a cloud-agnostic interview, where a service catalog scores nothing.
+
+Every topic's `diagrams.md` also ends with a **🎯 one-page master diagram** — the whole system on one screen with AWS and pattern annotations, for revision the night before. Exemplars: [payment-system](./interviews/payment-system/diagrams.md), [video-streaming](./interviews/video-streaming/diagrams.md).
 
 ---
 

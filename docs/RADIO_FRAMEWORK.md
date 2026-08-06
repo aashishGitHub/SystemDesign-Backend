@@ -2,7 +2,7 @@
 
 > **Purpose:** a repeatable structure for *answering* a system-design question out loud, so you never freeze on "where do I start?" and never run out of time in the wrong place.
 > **Origin:** RADIO is [GreatFrontEnd's](https://www.greatfrontend.com/) **front-end** system-design framework. The five steps generalize cleanly to backend HLD — this guide is written **backend-HLD-first**, with the front-end mapping called out at each step so you can use it in either interview.
-> **Companion:** [`docs/instructions.md`](./instructions.md) tells you how to *author a topic folder*. This file tells you how to *perform in the room*.
+> **Companions:** [`docs/instructions.md`](./instructions.md) tells you how to *author a topic folder*. This file tells you how to *perform in the room*. [`docs/AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md) is the primitive→AWS→native vocabulary you'll pull from in steps A and D. [`patterns/README.md`](../patterns/README.md) is the set of reusable moves you name in step A.
 > **Worked examples:** [`interviews/food-delivery/radio-walkthrough.md`](../interviews/food-delivery/radio-walkthrough.md) and [`interviews/e-commerce/radio-walkthrough.md`](../interviews/e-commerce/radio-walkthrough.md).
 
 ---
@@ -55,17 +55,20 @@ Ask about devices (mobile/desktop/low-end), network (offline/flaky?), i18n/RTL, 
 
 ### Do
 1. **Lead with the central split.** Every strong design hangs off one sentence (see table below). Say it first; the diagram is that sentence drawn.
-2. Draw client → edge (LB/API gateway/CDN) → services → data stores → async backbone (queue/stream).
-3. For each component, say its **one job** and *why it's a separate box* (different scaling profile, different consistency need, different team).
-4. Walk **one primary request end-to-end** through the boxes ("a customer places an order: gateway → order service → …"). A diagram you can't narrate is decoration.
-5. Only *now* name concrete tech, and frame each as **defensible, not gospel**: "Postgres for orders because I need ACID + an idempotency unique constraint; swap for any RDBMS."
+2. **Name the dominant pattern out loud.** Before the boxes, classify the problem: *"this is fundamentally a contention problem with a multi-step process hanging off it."* That single sentence is a stronger opening than any component list, because it tells the interviewer you've seen the shape before. The eight patterns and the reverse index (which patterns each classic problem needs) are in [`patterns/README.md`](../patterns/README.md).
+3. Draw client → edge (LB/API gateway/CDN) → services → data stores → async backbone (queue/stream).
+4. For each component, say its **one job** and *why it's a separate box* (different scaling profile, different consistency need, different team).
+5. Walk **one primary request end-to-end** through the boxes ("a customer places an order: gateway → order service → …"). A diagram you can't narrate is decoration.
+6. Only *now* name concrete tech — **primitive → AWS → swap**, never a bare service name. See §7 for the script and the traps.
 
-| Topic | Central split you lead with |
-|---|---|
-| E-commerce | The **consistency gradient**: browse (eventual) → cart (AP) → checkout (strong) → fulfillment (async) |
-| Food delivery | **Three traffic paths**: browse (read-heavy, eventual) · order (strong, atomic) · track (write-heavy stream) |
-| Video streaming | **Write path** (upload→transcode→store) vs **read path** (play→CDN→viewer) |
-| Ride sharing | **Three planes**: location ingest · matching · trip+tracking |
+| Topic | Central split you lead with | Dominant pattern to name |
+|---|---|---|
+| E-commerce | The **consistency gradient**: browse (eventual) → cart (AP) → checkout (strong) → fulfillment (async) | contention + multi-step |
+| Food delivery | **Three traffic paths**: browse (read-heavy, eventual) · order (strong, atomic) · track (write-heavy stream) | real-time + multi-step |
+| Video streaming | **Write path** (upload→transcode→store) vs **read path** (play→CDN→viewer) | large blobs + long-running tasks |
+| Ride sharing | **Three planes**: location ingest · matching · trip+tracking | scaling writes + real-time |
+| Ticketmaster | **Two tiers**: ephemeral hold (Redis TTL) vs durable booking (ACID) | contention |
+| Social feed | **Fan-out on write vs on read**, hybrid at the celebrity threshold | scaling reads + scaling writes |
 
 ### Front-end mapping
 Architecture = the **component tree** + the **client/server boundary** + the **data layer** (server state cache vs client UI state) + the **rendering strategy** (CSR/SSR/SSG/streaming). The "central split" is usually *server-cache state vs local UI state*.
@@ -85,6 +88,8 @@ Architecture = the **component tree** + the **client/server boundary** + the **d
 2. For each: **key fields**, **primary key**, and the **owning service/DB**.
 3. Call out the **relationships and the access pattern that drives the choice** — the shard/partition key falls out of "how is this read most often?" (orders by `user_id`, inventory by `sku`, location by `courier_id`).
 4. Note which entity needs which **store type** (see the decision tables in [`key-technologies-notes.md`](../key-technologies-notes.md) §"When to use what"): the ledger → RDBMS; the cart → AP KV; location pings → in-memory/TTL; search docs → inverted index.
+5. Say each store as **primitive + AWS + native**: *"the ledger needs ACID and a unique constraint for the idempotency key — Aurora Postgres, or any RDBMS; the cart needs availability over consistency — DynamoDB, or Cassandra/Couchbase."* Mapping table: [`AWS_SERVICE_MAP.md` §1.6](./AWS_SERVICE_MAP.md#16-databases). Name the partition-key trap while you're there (a hot key needs a write-sharded suffix — big table capacity does not raise the per-partition ceiling).
+6. Flag which stores are **derived, not authoritative** (search index, cache, materialized feed) and how they're kept fresh (CDC / Streams / outbox) — interviewers probe this because candidates casually make an index the source of truth.
 
 ### Front-end mapping
 Data model = the **client-side state shape**: normalized server-cache entities (React Query/Apollo cache keyed by id) vs local UI state (form drafts, selected filters). Decide what's *server state* (fetched, cached, invalidated) vs *client state* (never leaves the browser).
@@ -122,13 +127,15 @@ Interface = the **client↔server data-fetching contract** (REST/GraphQL/RPC), t
 ### Do
 1. **Let the interviewer steer**, or propose: "The hard part here is X — want me to go deep there?"
 2. For the chosen part, cover: **bottleneck → options → tradeoff → your pick → failure mode → how you detect/recover.**
-3. Reach for the right tool with a *reason tied to a number from step R*:
+3. **Work the ladder of the relevant pattern, cheapest rung first.** Each [`patterns/`](../patterns/README.md) file is a ladder, and the scoring move is starting at the bottom: contention starts at *design the race away* → conditional write → OCC → locks (distributed locks are **last**); reads start at *index/diagnose* → cache → CDN → replicas → precompute (sharding for reads is last); writes start at *write fewer times* → spread across owners → absorb bursts. Candidates who open with "I'd use a distributed lock" or "I'd shard" have skipped four cheaper rungs, and the interviewer notices.
+4. Reach for the right tool with a *reason tied to a number from step R*:
    - **Caching** (which strategy, what TTL, how invalidated) — because reads dominate N:1.
    - **Replication / sharding** — because the dataset/QPS exceeds one node.
    - **Async / queue / outbox** — because the spike must become a backlog, not an outage.
    - **Idempotency / saga / guarded writes** — because a retry must not double-charge/oversell.
-4. **Name the failure mode and the mitigation** (thundering herd → request coalescing + jittered TTL; hot partition → suffix/split; retry storm → backoff + circuit breaker).
-5. Close with **what you'd measure** (the SLOs / golden signals) — you can't operate what you can't see.
+5. **Name the failure mode and the mitigation** (thundering herd → request coalescing + jittered TTL; hot partition → suffix/split; retry storm → backoff + circuit breaker).
+6. **Name what the platform won't do for you** — exactly-once effect, cross-service transactions, fencing against a paused lock holder, and the sweeper that re-drives stuck work. See [`AWS_SERVICE_MAP.md` §4](./AWS_SERVICE_MAP.md#4-what-aws-does-not-give-you).
+7. Close with **what you'd measure** (the SLOs / golden signals) — you can't operate what you can't see. Prefer **age-based** signals (backlog age, oldest stuck workflow, replication lag) over counts: a dead worker pool produces zero errors.
 
 ### Front-end mapping
 Optimizations = **performance** (bundle splitting, lazy load, virtualization, image策略), **network** (request dedupe, optimistic UI, offline queue), **rendering** (CSR vs SSR vs streaming), **accessibility**, and **resilience** to flaky networks.
@@ -175,7 +182,54 @@ The *point* of the number is the **decision it drives**, not the digit. Every nu
 
 ---
 
-## 7. One-screen checklist
+## 7. Naming tech in the room — primitive → AWS → swap
+
+The most common way a strong design gets marked down is **name-dropping**: a diagram covered in service logos with no property attached to any of them. The fix is a fixed sentence order.
+
+### The 3-sentence tech-choice script
+
+> *"I need ⟨**property**⟩ because ⟨**number from step R**⟩. On AWS that's ⟨**service**⟩ — the thing to watch is ⟨**gotcha**⟩. Off AWS it's ⟨**OSS**⟩, so this isn't a lock-in decision."*
+
+Worked example:
+
+> *"I need an at-least-once work queue with a visibility timeout and a dead-letter queue, because a transcode takes ~4 minutes and a worker crash must not lose the job. On AWS that's SQS — I'd set the visibility timeout above the p99 job duration or the job runs twice, and make the handler idempotent anyway. Self-hosted it's RabbitMQ, or Kafka if I also needed replay."*
+
+That's four pieces of signal in one breath: the property, the justifying number, the managed service, and the failure mode. The full mapping table for every building block — plus the per-service gotchas — is [`docs/AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md).
+
+### Read the room: how much AWS to use
+
+| Interviewer type | How to name tech | Why |
+|---|---|---|
+| **Cloud-agnostic** (Google, Meta, most infra rounds) | Primitive first, AWS as a parenthetical: *"a partitioned replayable log — Kafka, or Kinesis if I'm on AWS"* | They score the property. An AWS catalog reads as narrow |
+| **AWS-deep** (Amazon, AWS-shops) | Same script, but expect the follow-up to be a **quota or failure mode**, not another service | Depth is tested by "what breaks at scale?", not by listing more services. [`AWS_SERVICE_MAP.md` §3](./AWS_SERVICE_MAP.md#3-the-aws-gotchas-that-carry-senior-signal) is that prep |
+| **Startup / pragmatic** | Add the **build-vs-buy and cost** angle: *"managed is 3× the unit cost but zero on-call — at our volume that's the right trade"* | Judgement, not just knowledge |
+
+### The move that separates senior from mid
+
+Name what the cloud **doesn't** give you. Exactly-once effect, cross-service transactions, global ordering, strong cross-region reads, circuit breakers, fencing against a paused lock holder, and the sweeper that finds stuck work — **none of these come from a service**; they're your design. Saying so unprompted is one of the highest-signal sentences available to you. ([`AWS_SERVICE_MAP.md` §4](./AWS_SERVICE_MAP.md#4-what-aws-does-not-give-you).)
+
+### Traps
+
+| Trap | Why it costs you | Fix |
+|---|---|---|
+| Fifteen service names, no properties | Reads as memorized | One primitive per box, then the name |
+| "Lambda for everything" | Ignores cold starts, runtime ceiling, sustained-throughput cost | Lambda for event glue; containers for sustained/long/latency-sensitive work |
+| Kinesis where SQS belongs (or vice versa) | Confuses ordering-unit with retry-unit | *"Do I need per-message retry, or per-entity ordering and replay?"* |
+| "DynamoDB scales infinitely" | Ignores per-partition ceilings | Name the write-sharded key suffix |
+| "Global Tables = multi-region strong consistency" | Factually wrong (LWW, eventual) | State the conflict-resolution semantics |
+| Quoting an exact quota confidently | One wrong number undoes a good answer | *"Approximately X — I'd verify the current quota"* |
+
+---
+
+## 8. Revision: the one-page master diagram
+
+Ten minutes before the interview you should be reading **one screen per topic**, not four files. Every topic folder's [`diagrams.md`](./instructions.md) ends with a **🎯 One-Page Master Diagram** — the whole system on one screen, with the central split as the layout, numbered flow, AWS service and pattern names annotated on the boxes, and the 2–3 genuinely hard parts marked in red. Each one also carries: the 60-second narration, the five numbers that justify the design, the patterns it assembles, the three things that break, and one "if you only remember one thing" sentence.
+
+**The pre-interview routine:** master diagram → the five numbers → the three failure modes. If you can narrate the diagram end-to-end and name the tradeoff at each red box, you're ready; if you stall, *that* box tells you which section of `deep-dive.md` to open. Exemplars: [`payment-system/diagrams.md`](../interviews/payment-system/diagrams.md) and [`video-streaming/diagrams.md`](../interviews/video-streaming/diagrams.md).
+
+---
+
+## 9. One-screen checklist
 
 ```
 R  □ Restated problem, got agreement
@@ -185,15 +239,17 @@ R  □ Restated problem, got agreement
    □ Capacity estimate with stated assumptions
 
 A  □ Central split named in one sentence FIRST
+   □ Dominant PATTERN named ("this is fundamentally a contention problem")
    □ Client → edge → services → stores → async backbone
    □ Each box has one job + reason to exist
    □ One request narrated end-to-end
-   □ Tech named as defensible, not gospel
+   □ Tech named primitive → AWS → swap, defensible not gospel
 
 D  □ Entities listed with key fields + PK
    □ Owning service/DB per entity
    □ Shard/partition key tied to dominant access pattern
    □ Store type per entity (RDBMS / KV / cache / stream / search)
+   □ Store choice stated as primitive + AWS + native (Aurora/DynamoDB/ElastiCache/OpenSearch…)
 
 I  □ ~5 endpoints for the scoped journeys
    □ Method, path, params, response, status codes
@@ -204,13 +260,15 @@ I  □ ~5 endpoints for the scoped journeys
 O  □ Picked the 1–2 hardest parts
    □ Bottleneck → options → tradeoff → pick → failure mode → recovery
    □ Each tool justified by a number from R
+   □ Worked the relevant pattern's LADDER (cheapest rung first), didn't jump to locks/sharding
    □ Thundering herd / hot key / retry storm addressed
+   □ Named at least one thing the cloud does NOT give you (idempotency, sweeper, fencing…)
    □ SLOs / golden signals to measure
 ```
 
 ---
 
-## 8. Common failure patterns (and the fix)
+## 10. Common failure patterns (and the fix)
 
 | Anti-pattern | Fix |
 |---|---|
@@ -218,6 +276,9 @@ O  □ Picked the 1–2 hardest parts
 | Ran out of time in O | Timebox R/A/D/I hard; O is where the score is |
 | Numbers with no derivation | State assumption → arithmetic → sanity check → decision |
 | Breadth-only deep dive | Two parts deep > ten parts shallow |
-| Tech name-dropping | Every tech gets a one-line *why*, framed as swappable |
+| Tech name-dropping | Primitive → AWS → swap; every tech gets a one-line *why* (§7) |
+| Didn't classify the problem | Name the dominant pattern before drawing (§2) |
+| Jumped to the top of the ladder | Distributed lock / sharding are the *last* rungs — start at "design the race away" |
 | One consistency model everywhere | Match consistency to each path (the gradient/three-paths idea) |
 | Forgot failure modes | For each key component: how it fails + how you detect/recover |
+| Assumed the managed service handles it | Exactly-once, cross-service txns, global ordering, breakers, sweepers are **yours** |
