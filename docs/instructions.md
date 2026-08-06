@@ -202,6 +202,53 @@ Two diagrams, plainest first:
 
 > **Why the last section and not the first?** Writing it requires knowing everything else, exactly like the README's "How a Senior Engineer Thinks" section. Reading it is the reverse — it's the first thing you open when revising. Authoring order and reading order are intentionally opposite.
 
+### §2.2 Optional — The 30-Minute Spoken Transcript (deeper rehearsal addendum)
+
+**The problem it solves.** The master diagram's 60-second narration proves you can *summarize* the system. It does not prove you can *perform* a real 30-minute interview under time pressure — hold the RADIO budget, narrate while drawing, field a deep-dive, and land the close. For a topic you're actively rehearsing (not every topic — this is optional, add it when you're drilling for a real loop), write out the **full spoken script**.
+
+**Rules that make it work:**
+
+1. **Timestamped blocks that mirror RADIO's own time split** ([`RADIO_FRAMEWORK.md`](./RADIO_FRAMEWORK.md) §"The one rule that matters most"), scaled to ~30 minutes: Requirements ≈ 2–5 min, Architecture (drawn live) ≈ 10 min, Data model ≈ 3 min, API ≈ 3 min, Optimizations/deep-dive ≈ 8–10 min, Close ≈ 1 min.
+2. **One spoken sentence per numbered edge of the master diagram.** The "draw + narrate" block must walk the *same* numbered flow as the master diagram, in the same order — the transcript is what you say while your hand draws that diagram, not a separate essay.
+3. **First-person, spoken register, short sentences.** "I'll…", "So here…", "The reason is…" — never written-prose paragraphs. If you wouldn't say it out loud that way, rewrite it.
+4. **Never re-derive numbers — reuse them.** Every figure must already exist in `answers.md` / the topic's `radio-walkthrough.md` (if present). The transcript quotes the number and the one-sentence decision it drives; it does not do fresh arithmetic.
+5. **Pick the two hardest parts for the deep-dive block** and give each its own bottleneck → options → pick → failure mode, in spoken form — mirrors RADIO's "O" step.
+6. **Close on the master diagram's "if you only remember one thing" line**, spoken as the last sentence.
+7. **End with a one-line practice tip** — read it aloud, on a timer, until the *structure* is internalized rather than the words memorized (so an interviewer's interruption doesn't break it).
+
+**Required structure of the section** (append directly after the master diagram's own required structure, still inside `diagrams.md`):
+
+```markdown
+### 🎤 30-Minute Interview Transcript — What to Actually Say
+
+> Practice reading this OUT LOUD while drawing the master diagram live. Timestamps
+> are a budget, not a stopwatch — the ORDER (R→A→D→I→O→Close) is what must hold.
+
+#### [00:00–0X:XX] Open — restate the problem and scope it
+- spoken sentences…
+
+#### [0X:XX–0X:XX] Size the problem in your head
+- spoken sentences, reusing numbers already derived elsewhere…
+
+#### [0X:XX–0X:XX] Draw the architecture live, narrating each piece
+1. "First, …" — draw box 1
+2. "Now …" — draw box 2
+   …one numbered block per numbered edge on the master diagram…
+
+#### [0X:XX–0X:XX] Data model — say this fast
+#### [0X:XX–0X:XX] API — the handful of endpoints that matter
+#### [0X:XX–0X:XX] Deep dive — pick the two hardest parts
+**Deep dive 1 — <hardest part> (~X min)**
+**Deep dive 2 — <second hardest part> (~X min)**
+
+#### [0X:XX–30:00] Close with the one-line thesis
+> 💡 **Practice tip:** …
+```
+
+**Exemplar:** [`interviews/food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — the "🎤 30-Minute Interview Transcript" at the very end. *(Predates the current §2.1 master-diagram spec, so its final diagram doesn't yet carry the five-numbers/patterns/three-failures tables — treat it as the transcript exemplar, not the master-diagram exemplar; use payment-system/video-streaming for that.)*
+
+> **Optional, not required.** Add this addendum only to topics you're rehearsing for an upcoming interview. Don't write one for every folder — it's a training artifact, not a documentation requirement.
+
 ### `deep-dive.md`
 - Beginner → Senior → Architect progression using depth tiers 🟢 (fundamentals) / 🟡 (senior) / 🔴 (staff/architect).
 - Real-world implementations, quantified failure modes, production tradeoffs, and a closing cheat sheet.
@@ -270,6 +317,7 @@ Copy this into a scratch note when starting a topic:
 [ ] diagrams.md: Diagram 1 = the split; 8–12 diagrams; each has "when to use" (Q refs) + "what interviewer checks"
 [ ] diagrams.md: Quick Interview Reference, THEN the 🎯 One-Page Master Diagram as the final section (§2.1)
 [ ] Master diagram: one screen · numbered flow · AWS+pattern annotations · red on the hard parts · narration + 5 numbers + patterns + 3 failures + "one thing"
+[ ] (Optional, if rehearsing this topic) §2.2 30-Minute Spoken Transcript added — timestamped R→A→D→I→O blocks, one sentence per numbered master-diagram edge, numbers reused not re-derived
 [ ] diagrams.md: mermaid colors carry meaning; labels quoted; `>` escaped; renders cleanly (preview it)
 [ ] deep-dive.md: 🟢🟡🔴 depth tiers, failure modes, real examples
 [ ] README.md: how-to-use names every file; files table; learning path; Patterns-in-play table; senior-thinking section written LAST

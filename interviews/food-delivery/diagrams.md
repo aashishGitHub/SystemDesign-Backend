@@ -570,3 +570,71 @@ flowchart TD
 7. **Dispatch loop** — "prep-aware JIT: assign the courier to arrive when the food is ready; the prep-time estimate is the linchpin."
 
 **One-line thesis to close:** *"Three paths, three store types — cache for browse, ACID for order, ephemeral geo for track — glued by an event bus so failures compensate and spikes buffer."*
+
+---
+
+### 🎤 30-Minute Interview Transcript — What to Actually Say
+
+> Practice reading this **out loud** while drawing Diagram 13 live, until it feels like your own words, not a script. Timestamps are a **budget, not a stopwatch** — an interviewer's questions will shift them, but the order (Requirements → Architecture → Data → API → Deep-dive → Close) should not. Full reasoning behind every number: [radio-walkthrough.md](./radio-walkthrough.md).
+
+#### [00:00–02:30] Open — restate the problem and scope it
+> *Say this before drawing anything.*
+- "I'll design the backend for a food-delivery platform like DoorDash or Swiggy."
+- "Customers browse nearby restaurants, place an order, pay, and track delivery live. Restaurants accept and prepare the food. Couriers pick up and deliver."
+- "I'll focus on three flows — browsing, ordering, and live tracking. I'll leave out reviews, promotions, and courier payouts unless you'd like me to cover those too."
+- "Two things must never happen: we can't sell an item that's out of stock, and we can't charge a customer twice for the same order."
+- "I'll assume 20 million orders a day as a working number — let me know if you'd like a different scale."
+
+#### [02:30–05:00] Size the problem in your head
+> *Say this before you draw — it tells the interviewer where you'll spend your effort.*
+- "20 million orders a day works out to about 230 orders per second on average."
+- "Dinner rush concentrates demand, so peak is roughly 5 times that — about 1,200 orders per second. That's still small for a database to handle."
+- "The real scale problem is location tracking: if 500,000 couriers each send a GPS update every 4 seconds, that's 125,000 location writes per second."
+- "And if the average delivery takes about 40 minutes, then by Little's Law — concurrent connections equal arrival rate times how long each one lasts — that's roughly 3 million live tracking connections open at once."
+- "So here's my takeaway before I draw anything: orders are a **correctness** problem, not a scale problem. Tracking is the opposite — it's a pure **scale** problem. I'll design each one differently."
+
+#### [05:00–15:00] Draw the architecture live, narrating each piece
+> *This is where Diagram 13 gets drawn, box by box, in the order below. Say the sentence, then draw the box.*
+
+1. **"First, the three actors."** Draw customer, restaurant, courier apps. *"This is a three-sided marketplace — the restaurant is a first-class actor, not just a passive resource, because it can reject an order after the customer has already paid."*
+2. **"Everything goes through one gateway first."** Draw the API Gateway box. *"It handles authentication, rate limiting, and routing — one front door for all three apps."*
+3. **"Now the browse path."** Draw the blue Browse subgraph. *"This is about 90% of all traffic. It's read-heavy, and a slightly stale price or 'sold out' badge is totally fine here. So I serve it from a cache and CDN in front of Postgres, plus a search index for restaurant/dish discovery. The real database is touched rarely."*
+4. **"Now the order path."** Draw the green Order subgraph. *"This is small in volume — about 1,200 orders a second at peak — but it must be perfectly correct. Two guarantees here: a guarded conditional decrement on the inventory row means we never oversell — if zero rows update, it's sold out. And an idempotency key means a retry or double-tap never charges twice. The order row and its event get written in one database transaction — that's called the transactional outbox — so the event can never be lost or duplicated."*
+5. **"That event goes onto Kafka."** Draw the Kafka box. *"Everything that happens after the order is committed — notifying the restaurant, planning dispatch, sending a receipt — is just an event on this bus. That means a dinner-rush spike turns into a backlog in Kafka, not a meltdown in the checkout flow."*
+6. **"Now the track path — this is the real scale problem."** Draw the orange Track subgraph. *"125,000 GPS writes a second go into an in-memory store with a short expiry — never the order database, because this data is disposable. About 3 million live connections are held by a dedicated WebSocket gateway, and positions are pushed out through a publish-subscribe layer so we're not polling."*
+7. **"Last piece — the dispatch loop."** Draw Dispatch. *"Unlike ride-sharing, where you dispatch a driver immediately, here dispatching too early means the courier waits around for food that isn't ready yet. So dispatch is prep-aware: we assign a courier to arrive right when the food is ready. The accuracy of that prep-time estimate is the single most important number in the whole system."*
+
+#### [15:00–18:00] Data model — say this fast, don't over-model
+- "The core entities are User, Restaurant, MenuItem, Order, Courier, CourierLocation, Payment, and an Outbox table."
+- "Two modeling decisions matter here. First, courier location is a **separate entity in a separate store** from the courier's profile — it's hot, ephemeral data, and mixing it with the transactional database would drown the order path."
+- "Second, the menu has a **version number**. A menu edit bumps the version and creates a new cache key, instead of mutating data in place — that's how 'sold out' propagates without invalidation bugs."
+- "I'd shard orders by user ID, restaurants and menus by restaurant ID, and courier location by metro area, since fulfillment is always local to one city."
+
+#### [18:00–21:00] API — the handful of endpoints that matter
+- "On the read side: `GET /restaurants` for discovery, and `GET /restaurants/{id}/menu` for the menu — both cacheable, both fine to be slightly stale."
+- "On the write side: `POST /orders`, and this is the one endpoint I'll call out specifically — it carries an **Idempotency-Key header**. If the client retries because of a network blip, the same key returns the exact same order instead of creating a second one or charging twice."
+- "Order placement is synchronous because the customer needs an answer in under two seconds, but everything after that — restaurant acceptance, dispatch, notifications — happens asynchronously over that same Kafka event bus."
+- "For live tracking, I'd use a WebSocket, because the server needs to push updates to the client — polling three million clients every few seconds just doesn't scale."
+
+#### [21:00–29:00] Deep dive — pick the two hardest parts and go deep
+> *If the interviewer doesn't redirect you, offer this yourself: "Where would you like me to go deeper — the tracking scale problem, or the order correctness problem? I can do both."*
+
+**Deep dive 1 — the location firehose and live tracking (~4 min)**
+- "125,000 writes a second and 3 million open connections would fall over instantly if I wrote every ping to the transactional database and had clients poll for updates."
+- "So GPS pings land in an in-memory store, geo-bucketed by cell, with a short expiry — a lost ping just gets replaced by the next one four seconds later, so there's nothing to recover."
+- "For reads, I don't push every position to every client — I publish once per courier update, and only the handful of clients actually watching that order receive it, through a publish-subscribe layer."
+- "I'd also throttle updates to about once every two to four seconds — a human eye doesn't need ten updates a second, and it cuts network traffic by an order of magnitude."
+- "The failure mode to call out: if a gateway server dies, all its connected clients try to reconnect at once — a thundering herd. The fix is a jittered backoff on the client so reconnects spread out instead of hitting all at once."
+
+**Deep dive 2 — the order saga and prep-aware dispatch (~4 min)**
+- "An order touches four different services — payment, inventory, the restaurant, and dispatch — each with its own database. There's no single transaction across all of them, so I use a **saga**: a sequence of steps, each with a compensating action if something later fails."
+- "The flow is: reserve stock, authorize the payment — not charge it yet — create the order, and notify the restaurant. If the restaurant rejects or times out, I void the authorization and release the stock. If they accept, I capture the payment and start dispatch."
+- "That authorize-then-capture split matters because the restaurant can still say no after the customer has already entered their card — I never want to have taken money for food that won't be made."
+- "For dispatch, the key idea is **prep-aware, just-in-time assignment** — I work backward from when the food will be ready, and assign a courier to arrive at exactly that moment. Assigning too early means a courier stands around; too late means cold food."
+- "As a safety net, I'd run a periodic reconciliation job that checks for any paid order with no dispatch progress after a few minutes and re-fires the event — so a lost message can never strand a paid order."
+
+#### [29:00–30:00] Close with the one-line thesis
+> *End on this — it's the single sentence that shows you understood the whole system.*
+- "So to summarize: three traffic paths, three different stores. Browse lives on a cache because reads dominate. Order lives on a strongly-consistent database because correctness matters more than speed there. Tracking lives on an ephemeral in-memory store because it's a pure scale problem. An event bus glues them together, so a spike becomes a backlog instead of an outage, and a failure gets undone by a compensating action instead of corrupting the order."
+
+> 💡 **Practice tip:** say this transcript aloud, timing yourself, twice a week before an interview. The goal isn't to memorize the words — it's to internalize the **structure** (scope → architecture → data → API → two deep dives → close) so you can rebuild it under pressure even when the interviewer interrupts and reorders you.

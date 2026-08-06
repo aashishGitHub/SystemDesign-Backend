@@ -227,6 +227,8 @@ Ten minutes before the interview you should be reading **one screen per topic**,
 
 **The pre-interview routine:** master diagram → the five numbers → the three failure modes. If you can narrate the diagram end-to-end and name the tradeoff at each red box, you're ready; if you stall, *that* box tells you which section of `deep-dive.md` to open. Exemplars: [`payment-system/diagrams.md`](../interviews/payment-system/diagrams.md) and [`video-streaming/diagrams.md`](../interviews/video-streaming/diagrams.md).
 
+**Going deeper — the 30-minute spoken transcript.** The 60-second narration proves you can *summarize*; it doesn't rehearse a full interview under time pressure. For a topic you're actively drilling before a real loop, `diagrams.md` can carry an **optional** addendum — a full spoken script, timestamped in blocks that mirror this framework's own R/A/D/I/O time budget (§0) scaled to ~30 minutes, with one first-person sentence per numbered edge of the master diagram, reusing (never re-deriving) the numbers already in `answers.md`. Read it aloud on a timer until the *structure* sticks, not the wording — that's what survives an interviewer's interruption. Spec: [`instructions.md`](./instructions.md) §2.2. Exemplar: [`food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — "🎤 30-Minute Interview Transcript."
+
 ---
 
 ## 9. One-screen checklist

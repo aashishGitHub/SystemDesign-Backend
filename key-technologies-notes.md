@@ -278,7 +278,19 @@ Split one dataset across nodes so it can exceed a single machine.
 - **Rebalancing** — moving partitions when you scale in/out; do it online (vnodes make this cheap).
 - **Cross-shard queries/joins** are expensive (scatter-gather) → choose the partition key to match your dominant access pattern.
 
-→ Deep dive: `interviews/consistent-hashing/`, `interviews/sharding-replication/`
+### Geospatial Indexing (S2 / H3 / Geohash) — "partitioning by location"
+Turns a lat/lng point into a **cell ID** so "find things near me" becomes a normal indexed lookup (nearby cell IDs are numerically close) instead of scanning every row's raw coordinates.
+
+| | **S2** (Google) | **H3** (Uber, open-sourced) |
+|---|---|---|
+| Cell shape | Square (cube projected onto a sphere) | **Hexagon** |
+| Why it matters | Some distortion at cell edges | **Uniform center-to-neighbor distance** — all 6 neighbors equidistant, ideal for radius search |
+| Typical op | cell ID + `neighbors()` | `k_ring(cell, k)` — widen the ring instead of re-indexing |
+
+- *In plain words:* cover the map in tiles — S2 uses squares, H3 uses hexagons — so "who's nearby" = "whose tile ID is close to mine."
+- Use for: driver/courier matching, "restaurants near me," any "within R km" query at scale.
+
+→ Deep dive: `interviews/consistent-hashing/`, `interviews/sharding-replication/`, `interviews/ride-sharing/diagrams.md` (full S2 vs H3 vs geohash table + k-ring math).
 
 ---
 

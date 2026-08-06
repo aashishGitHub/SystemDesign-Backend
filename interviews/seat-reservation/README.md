@@ -7,10 +7,11 @@
 
 ## How to Use This Guide
 
-1. **Get the mental model** — skim [simple-diagram.md](./simple-diagram.md) first: it names the central split (ephemeral Redis hold vs durable SQL booking, fronted by the virtual waiting room) in one screen.
-2. **First pass** — attempt every question in [questions.md](./questions.md) yourself before reading the answer. Write your answer on paper or a whiteboard. Time yourself: 3–5 minutes per question.
-3. **Second pass** — read the answers in [answers.md](./answers.md), compare against your attempt, and note every gap. Pay special attention to Redis commands, SQL locking patterns, and capacity numbers you missed.
-4. **Whiteboard** — reproduce the system from [diagrams.md](./diagrams.md) (start with Diagram 1 — the central split), then narrate the seat-selection and checkout flows end-to-end and stress-test yourself with the Taylor Swift flash-sale scenario.
+1. **Read the story** — [story.md](./story.md) walks one fan buying one seat, in chronological order from 09:59:58 to the turnstile, and explains every mechanism at the moment it fires. Start here if the pieces don't yet connect.
+2. **Get the mental model** — skim [simple-diagram.md](./simple-diagram.md): it names the central split (ephemeral Redis hold vs durable SQL booking, fronted by the virtual waiting room) in one screen.
+3. **First pass** — attempt every question in [questions.md](./questions.md) yourself before reading the answer. Write your answer on paper or a whiteboard. Time yourself: 3–5 minutes per question.
+4. **Second pass** — read the answers in [answers.md](./answers.md), compare against your attempt, and note every gap. Pay special attention to Redis commands, SQL locking patterns, and capacity numbers you missed.
+5. **Whiteboard** — reproduce the system from [diagrams.md](./diagrams.md) (start with Diagram 1 — the central split), then narrate the seat-selection and checkout flows end-to-end and stress-test yourself with the Taylor Swift flash-sale scenario.
 
 ---
 
@@ -35,7 +36,8 @@
 
 | File | Purpose |
 |------|---------|
-| [simple-diagram.md](./simple-diagram.md) | **Start here.** The central split (ephemeral hold vs durable booking, fronted by the waiting room) + a detailed version with real services and protocols. |
+| [story.md](./story.md) | **Start here if you're connecting the dots.** One purchase told in chronological order (09:59:58 → the turnstile), in plain words, with every mechanism explained at the moment it fires. Covers all 53 questions + bonus on a single timeline. |
+| [simple-diagram.md](./simple-diagram.md) | The central split (ephemeral hold vs durable booking, fronted by the waiting room) + a detailed version with real services and protocols. |
 | [questions.md](./questions.md) | 53 questions across 10 levels + bonus. Attempt before reading answers. |
 | [answers.md](./answers.md) | Full answers with TypeScript code, Redis commands, SQL, comparison tables, and named tradeoffs. |
 | [diagrams.md](./diagrams.md) | 10 interview-ready Mermaid diagrams (start with Diagram 1 — the central split). |

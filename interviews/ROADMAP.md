@@ -391,7 +391,7 @@ Concurrency control, the "thundering herd" at sale open time, and distributed lo
 **Status:** ✅ Done | **Priority:** P1 | **Folder:** `interviews/ride-sharing/`
 
 **What it covers:**
-Real-time driver location updates at scale (geospatial indexing — geohash, S2, H3). Matching algorithm (proximity search, surge pricing heuristics). Trip state machine. Real-time tracking via WebSockets. ETA calculation and routing. Driver supply / rider demand heat maps. Geofencing. Push notifications for driver assignment. Surge pricing computation. Data pipeline for analytics.
+Real-time driver location updates at scale (geospatial indexing — geohash, S2, H3 — see [`key-technologies-notes.md` §13](../key-technologies-notes.md) for a short primer, and [`ride-sharing/diagrams.md`](ride-sharing/diagrams.md) for the full S2-vs-H3 comparison table + k-ring math). Matching algorithm (proximity search, surge pricing heuristics). Trip state machine. Real-time tracking via WebSockets. ETA calculation and routing. Driver supply / rider demand heat maps. Geofencing. Push notifications for driver assignment. Surge pricing computation. Data pipeline for analytics.
 
 **Patterns used:** Geospatial indexing, WebSockets, Message Queues, Distributed Caching, CDN
 
@@ -606,7 +606,7 @@ Payment systems require the strongest guarantees in the whole catalogue (exactly
 **Status:** 🔲 Not Started | **Priority:** P3 | **Folder:** `interviews/maps/`
 
 **What it covers:**
-Geospatial indexing (Quadtree, Geohash, S2 cells). Map tile serving (tile pyramid, zoom levels). Routing algorithms (Dijkstra, A*, contraction hierarchies). ETA prediction. Real-time traffic data integration. Points of Interest (POI) search. Reverse geocoding. Place search. Offline maps. Map rendering pipeline. Turn-by-turn navigation.
+Geospatial indexing (Quadtree, Geohash, S2 cells — primer: [`key-technologies-notes.md` §13](../key-technologies-notes.md); full S2/H3 comparison: [`ride-sharing/diagrams.md`](ride-sharing/diagrams.md)). Map tile serving (tile pyramid, zoom levels). Routing algorithms (Dijkstra, A*, contraction hierarchies). ETA prediction. Real-time traffic data integration. Points of Interest (POI) search. Reverse geocoding. Place search. Offline maps. Map rendering pipeline. Turn-by-turn navigation.
 
 **Patterns used:** CDN, Distributed Caching, Blob Storage, Message Queues
 
