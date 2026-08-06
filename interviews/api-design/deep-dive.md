@@ -2661,3 +2661,34 @@ MONITORING:
 | Event sourcing immutability | Events are truth, state is derived, perfect audit trail |
 | High-contention locking | FOR UPDATE + database lock, fail-fast (409 Conflict) on race |
 | Compensating transactions | Must be as reliable as primary (retry, circuit breaker, DLQ) |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** replication lives below this layer — but the **API contract must expose its consequences**, and that's a design responsibility, not an infrastructure one. Stateless API servers are horizontally redundant behind a load balancer (§9); the datastore's layout is somebody else's chapter.
+- **Mode:** not chosen here. What *is* chosen here is whether clients can **detect and cope** with the mode you're running: a version/ETag they can pin, a `Location` they can poll, or the created entity returned in the `201` body.
+- **Why here:** the line to have ready is *"replication lag is an API-design problem, not just an infrastructure one."* The most common production symptom in the whole repo is a **`201 Created` immediately followed by a `404` from a read replica** — the client did nothing wrong, the infrastructure is working as configured, and the *contract* is what's broken. The fixes are all contract-level: **return the full entity in the create response** so no read-after-write is needed at all (the cheapest fix, and the one most often skipped), or return a version/LSN the client passes back so its read can be pinned, or document the endpoint as eventually consistent and give clients a polling shape that tolerates it. Two related contract obligations: **idempotency keys (§4) are what make client retries safe across a failover** — without them, a timeout during a leader election turns one intended write into several — and **pagination (§6) breaks under replica lag** if cursors encode positions that different replicas resolve differently, which is another argument for opaque, server-signed cursors over raw offsets.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** browser/client cache → CDN or API gateway → service. This topic's job is not to *build* a cache but to make the API **declare** its cacheability correctly via `Cache-Control`, `ETag`/`If-None-Match`, and `Vary`.
+- **Strategy:** read-through at the HTTP layer, driven entirely by the contract. `GET`/`HEAD` are safe and cacheable; `POST`/`PATCH`/`DELETE` never are. **Conditional requests** turn a 200 into a `304 Not Modified` — the cheapest possible response, and the reason ETags are a design decision rather than a detail.
+- **Invalidation:** TTL via `max-age`/`s-maxage`, validators via `ETag`/`Last-Modified`, and `Vary` to keep variants apart. Mutations invalidate by bumping the resource's ETag; collection endpoints usually get a short TTL because you can't cheaply version "page 2 of everything."
+- **Why here:** two sections of this topic are secretly about caching. **Pagination (§6):** cursor pages are stable and cacheable; offset pages shift under concurrent writes, so caching them serves *incoherent* results — that's an argument for cursors beyond performance. **Idempotency (§4):** the idempotency-key store is a short-TTL keyed lookup that must be **durable, not evictable** (see [payment-system](../payment-system/)). The classic production bug: caching an authenticated response in a **shared** cache without `Cache-Control: private` or `Vary: Authorization` — one user's data served to another. Interview line: *"replication lag is an API-design problem too — a `201 Created` followed by a `404` from a read replica is fixed in the contract by returning the entity body or a version the client can pin, not by adding infrastructure."*
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Concept home for the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix (linked from [key-technologies-notes.md §4/§5](../../key-technologies-notes.md)). ⚠️ Tech names in the matrix are illustrative — verify against primary sources.
+
+- **This folder owns the API-gateway concept:** an **API Gateway is an advanced L7 reverse proxy** that centralizes cross-cutting concerns — **auth, access control, rate limiting, request transformation, analytics** — so each microservice doesn't re-implement them.
+- **In plain words:** *one security checkpoint at the building entrance* — check ID once; don't make every office recheck.
+- **Every system in the proxy matrix** fronts its services with one of these; this is where the gateway's responsibilities live.

@@ -1025,3 +1025,34 @@ just overflow — otherwise "multi-CDN" fails exactly when you need it.
 | Capacity: latency | 50 ms RTT ≈ few-thousand-km max path → PoP near every major metro/IXP |
 | Capacity: bandwidth | 10M/s × 100 KB ≈ 8 Tbps aggregate; ~160 Gbps/PoP avg × 2–3 for peak |
 | Unprompted asks | Change frequency? Stale-data blast radius? Private/authenticated content? |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern (YouTube/Netflix):** edge replication driven by **popularity**, tiered origin → regional → edge; hot objects fan out to thousands of PoPs.
+- **Mode:** asynchronous pull/push to the edge.
+- **Why here:** replication *is* the CDN — the more popular an object, the more replicas move closer to users, cutting origin load and latency.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 7–8, YouTube/Netflix) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** browser cache → **edge PoP** → **origin shield** (mid-tier) → origin. This topic is the **home for the edge tier**, the way [distributed-caching](../distributed-caching/) is the home for the application tier.
+- **Strategy:** **pull-through (lazy fill)** is the default — the first request to each PoP misses and populates it. **Push/pre-position** is reserved for large, predictable objects where a first-request miss is unacceptable (Netflix filling appliances off-peak, §8). Cache-key normalization (§4) decides whether one object stays one object or fragments into thousands of near-duplicates.
+- **Invalidation:** TTL + `stale-while-revalidate` as the everyday mechanism; **surrogate-key purge** (§5) when you need to drop "everything tagged with product 123" in one call; versioned/immutable URLs when you'd rather never purge at all.
+- **Why here:** the edge is where the **thundering herd** is both most dangerous and most solvable — a viral object expiring across hundreds of PoPs simultaneously would hit the origin hundreds of times over. **Origin shield + request collapsing (§6)** reduces that to one request, and it is the single highest-value idea in this topic. Note the economics: at CDN scale the hit ratio is a **bandwidth bill**, not a latency nicety — a 1% miss rate on petabyte-scale egress is real money, which is why §10's capacity math is about cost as much as speed.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Concept home for the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix (linked from [key-technologies-notes.md §4/§5](../../key-technologies-notes.md)). ⚠️ Tech names in the matrix are illustrative — verify against primary sources.
+
+- **This folder owns the edge-proxy tier:** the reverse proxy at the PoP does **SSL/TLS termination near the user**, **geo-IP routing** to the nearest edge, **HTTP Range** byte-serving for video, and **QUIC/HTTP-3** for fast far-user connections.
+- **In plain words:** *do the expensive work (crypto, distance) as close to the user as possible.*
+- **Powers** YouTube/Netflix (range + geo) and Typeahead (QUIC) in the proxy matrix.

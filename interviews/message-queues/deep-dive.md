@@ -700,3 +700,25 @@ kafka-topics.sh --describe --topic my-topic
 # Reset offset (dangerous!)
 kafka-consumer-groups.sh --reset-offsets --to-earliest --execute
 ```
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Twitter:** Kafka topics replicated **RF=3** across brokers so a broker loss never drops a queued timeline update.
+- **WebCrawler:** replicated task queues (Kafka/RabbitMQ) log tasks to disk; a crashed worker's **lease expires → task auto-re-queues**.
+- **Mode:** async, with acks/ISR governing durability.
+- **Why here:** the queue *is* the durability boundary — replication factor + leases turn worker/broker death into a retry, not a data-loss event.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, OS page cache) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** the **OS page cache** (this is the whole story), broker-side sparse index files, and a consumer-side prefetch buffer.
+- **Strategy:** **deliberately no user-space cache.** Kafka-style brokers delegate caching to the kernel: writes append to a file the OS holds in free RAM, and consumers reading near the tail read *that same region* — so recent messages are served from memory, via `sendfile`-style zero-copy, without the broker ever copying them into its own heap. Building an application-level cache here would duplicate the page cache and steal the RAM that makes it work.
+- **Invalidation:** none in the usual sense — the log is **append-only and immutable**, so nothing ever goes stale. **Retention (time or size) is the eviction policy**, and consumer offsets are a cursor, not a cached value.
+- **Why here:** the reframing that earns points is *"a lagging consumer is a cache-miss problem."* While a consumer reads near the tail it costs almost nothing. Once it falls outside the page-cache window it starts hitting **disk**, and because that I/O contends with every other consumer and with the write path, one slow consumer degrades the whole broker's tail latency. Two consequences: alarm on consumer lag **in bytes** (how far outside RAM you are), not just in messages; and be wary of giving the broker a large JVM heap, since that memory is more valuable to the OS as page cache. This is also the cleanest example of a cache you get for **free** by choosing an append-only data structure — the same reason immutability keeps recurring across this repo.

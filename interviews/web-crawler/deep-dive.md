@@ -1473,3 +1473,35 @@ proprietary crawler are not publicly verified and are labeled illustrative throu
 | Parser security | Size cap 5 MB, parse timeout, decompression-ratio cap, redirect cap, sandbox, SSRF guard |
 | Silent failures | Bloom FP, DNS negative-cache, over-normalization lose coverage without erroring — monitor them |
 | Real systems | Googlebot (evergreen Chromium, RFC 9309), Common Crawl (WARC on S3), Mercator (frontier + async DNS) |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** replicated URL-frontier **task queues** + storage replication; tasks are leased, disk-logged, and **re-queued on lease expiry**.
+- **Mode:** asynchronous.
+- **Why here:** at crawl scale, workers die constantly — replication + leases make a lost worker a re-fetch, so no URL is silently dropped.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 12, WebCrawler) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** a **DNS resolver cache** (§7) → a per-host **`robots.txt` cache** (§5) → the **URL-seen Bloom filter** (§3) → content/blob storage.
+- **Strategy:** caching here buys **politeness and cost, not user latency** — there is no user waiting, which makes this the most unusual caching profile in the repo. DNS is cached because resolution is the crawler's biggest hidden bottleneck: without it, every fetch pays a resolver round-trip and you DoS your own resolvers long before you saturate bandwidth. `robots.txt` is cached per host so you aren't refetching a policy file before every single page.
+- **Invalidation:** DNS honors record TTLs; `robots.txt` gets an **hours-scale TTL** — and that TTL is an *ethical* parameter, not a performance one, because too long means you keep crawling paths a site has since disallowed. The Bloom filter is **never invalidated**: it's append-only, and its false positives are accepted permanently.
+- **Why here:** this topic contains two caches that break the normal rules, which is why it's worth a section. The **Bloom filter is a deliberately lossy cache** (§3) — it trades correctness for memory *on purpose*, because a false positive means one URL is never crawled while a false negative doesn't exist, and at billions of URLs "occasionally miss a page" is enormously cheaper than "store every URL you've ever seen." That's the clearest example in the repo of choosing a probabilistic structure over an exact one and being able to defend it. The second: **re-crawl scheduling (§10) is cache-freshness policy applied to the entire web** — each page gets an estimated TTL derived from its observed change rate, so a news homepage is refetched hourly and an archived PDF yearly. Framing re-crawl as adaptive TTL rather than as a scheduling heuristic is a strong senior signal, and it connects directly to §8's crawl-budget argument.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** the canonical **forward-proxy** use — a large **egress pool with rotating residential IPs** to avoid blacklisting.
+- **Layer:** L4 / L7 (SOCKS5 / HTTP).
+- **How:** outbound proxies also enforce **per-domain politeness** (e.g. ≤1 req/s/host) so the crawler never accidentally DoS-es a target.
+- **🧭 Recall:** *go out through a rotating IP pool and stay polite per site* — forward proxy protects/masks the client.

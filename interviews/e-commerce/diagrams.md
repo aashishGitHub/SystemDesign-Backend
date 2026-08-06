@@ -409,3 +409,88 @@ flowchart TB
 - Dual-write order+event without an **outbox**.
 - Synchronous fulfillment chain that melts checkout on a spike.
 - No **idempotency key** → double order/charge.
+
+---
+
+## THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** the single whiteboard diagram to reproduce from memory. It folds the **consistency gradient** — browse → cart → checkout → fulfillment — into one picture with every datastore **labeled by type**, plus the outbox + Kafka async backbone. Draw left→right (consistency rising) and narrate each stage. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+
+```mermaid
+flowchart TD
+    SHOP["Shopper (web / app)"]
+    EDGE["② CDN → API Gateway + L7 LB\nedge cache · auth · rate-limit · bot defense"]
+    SHOP --> EDGE
+
+    subgraph BROWSE["③ BROWSE — EVENTUAL · reads ~1000:1 · p99 sub-200ms"]
+        direction TB
+        SR["Search"]
+        ES[("Elasticsearch\n🔎 inverted index (CDC-fed)")]
+        CAT["Catalog Service"]
+        CACHE[("CDN + Redis\n⚡ cache — body by immutable version")]
+        REPL[("Read replicas\n🗄️ Postgres (RDBMS)")]
+        SR --> ES
+        CAT --> CACHE --> REPL
+    end
+
+    subgraph CART["④ CART — AVAILABILITY-FIRST (AP) · never reject"]
+        direction TB
+        CS["Cart Service"]
+        KV[("DynamoDB / Cassandra\n🧩 AP KV — vector clocks · add-wins")]
+        CS --> KV
+    end
+
+    subgraph CHECK["⑤ CHECKOUT — STRONG / CP · ~231 ops/s (Prime Day ~10⁴/s)"]
+        direction TB
+        CO["Checkout / Inventory"]
+        INV[("Inventory\n🗄️ Postgres — guarded conditional decrement")]
+        PAY["Payment — authorize now"]
+        CO --> INV
+        CO --> PAY
+    end
+
+    subgraph FULFILL["⑦ FULFILLMENT — ASYNC · spike → backlog"]
+        direction TB
+        ORD["Order Service"]
+        ODB[("Orders + OUTBOX\n🗄️ Postgres (ACID) — UNIQUE idem key")]
+        FUL["Fulfillment consumer\nwarehouse · ship · capture on ship"]
+        ORD --> ODB
+    end
+
+    KAFKA{{"⑥ Kafka event bus — OrderPlaced ..."}}
+
+    EDGE --> SR
+    EDGE --> CAT
+    EDGE --> CS
+    EDGE --> CO
+    CO -->|"place order"| ORD
+    ODB -.->|"outbox relay / CDC"| KAFKA
+    KAFKA -.->|"drain at own pace"| FUL
+
+    style BROWSE fill:#dbeafe,stroke:#1d4ed8
+    style CART fill:#e9d5ff,stroke:#7c3aed
+    style CHECK fill:#dcfce7,stroke:#16a34a
+    style FULFILL fill:#fed7aa,stroke:#ea580c
+    style KAFKA fill:#fef9c3,stroke:#ca8a04
+```
+
+**Store-type legend (say the type, not the brand):**
+
+| Component | Store **type** | Defensible pick | Why this type |
+|---|---|---|---|
+| Product body / price overlay | **Distributed cache + CDN** | Redis + CloudFront | Reads dominate ~1000:1; immutable version key → >99% hit ratio |
+| Product / order / inventory truth | **RDBMS (ACID, B-tree)** | Postgres | Transactions + `UNIQUE` idempotency + guarded decrement |
+| **Cart** | **AP key-value** | DynamoDB / Cassandra | Must never reject a write; merge concurrent versions |
+| Product search | **Inverted index** | Elasticsearch | Faceted/fuzzy; CDC-fed, not the source of truth |
+| Event backbone / outbox relay | **Log / stream** | Kafka | Replayable; turns a Prime-Day spike into a backlog |
+
+**Draw it in this order (and what to say):**
+1. **Shopper + edge** — "CDN and gateway first; most traffic dies at the edge."
+2. **Browse (blue)** — "eventual consistency; a stale price is a UX blemish, so cache/CDN + replicas + search."
+3. **Cart (purple)** — "availability-first: a rejected add-to-cart is lost money → AP KV, merge later."
+4. **Checkout (green)** — "strong consistency: guarded decrement = no oversell, idempotency key = no double-charge; authorize the card here."
+5. **Kafka** — "order + event committed in one txn via outbox; async from here."
+6. **Fulfillment (orange)** — "consumer allocates warehouse and ships; capture on ship. A spike is a backlog, not a checkout meltdown."
+7. Arrow the gradient across the top: **eventual → AP → strong → async**.
+
+**One-line thesis to close:** *"E-commerce is a consistency gradient: cache the browse path, keep the cart always-writable, make checkout strongly consistent, and run fulfillment async — four CAP points, four store types, one event bus."*

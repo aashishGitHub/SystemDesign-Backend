@@ -1239,3 +1239,35 @@ When instance fails:
 | ETA accuracy target | < 2 min deviation |
 | Driver no-show timeout | 10 minutes |
 | Payment retry | 3 attempts with backoff |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Uber:** active-active **stateful** services on a consistent-hashing membership ring (**Ringpop**); live trip/match session state is streamed to standby nodes for zero-downtime failover mid-trip.
+- **Nearby Friends:** ephemeral in-memory ring + Redis **geospatial** replicas (async); 100K+ GPS writes/s where losing ~5 s of location beats any downtime (loose RPO).
+- **Why here:** location is a write firehose (ephemeral, speed-first) while an in-progress trip is stateful (must survive a node death) — two different replication answers in one system.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 15–16, Nearby Friends/Uber) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** an in-memory **geospatial index** of driver positions (§1) → Redis GEO replicas → a per-geohash-cell cache for **ETA** and **surge multipliers** (§6) → the trip store (uncached).
+- **Strategy:** the location tier is **write-back with no durable flush** — deliberately ephemeral, RAM-only, and correct that way (§2). Surge and ETA are **refresh-ahead per cell**, computed on a short cycle so a request never waits on a pricing or routing computation. Trip state is never cached.
+- **Invalidation:** location entries carry a **TTL close to the ping interval**, so a driver whose app dies vanishes from matching within seconds instead of being dispatched to a ride they cannot accept. Surge/ETA cells expire on a short TTL because the underlying supply-demand ratio genuinely changes that fast.
+- **Why here:** the **freshness window is the product**. Matching against a 60-second-old position sends a driver to the wrong block, so this is a system where the staleness budget (~5 s) is a hard functional requirement rather than a cosmetic tolerance — the inverse of the e-commerce price badge. At 100K+ GPS writes/s, no durable store is even a candidate, so RAM-only is forced by arithmetic as well as by product need. The split worth drawing out, because it exactly mirrors this system's replication story: **an ephemeral, disposable location cache alongside a stateful in-progress trip that must survive a node death.** Two opposite answers in one system, chosen by asking what it costs to lose each one — a few seconds of GPS pings costs nothing, a dropped trip mid-ride costs a customer.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **telemetry ingestion gateway** (raw UDP/TCP GPS pings every 4 s → batched → streamed into Kafka/location services) + **geohash spatial-shard routing** + stateful WS for matching.
+- **Layer:** L4 / L7 (UDP / gRPC / WebSockets).
+- **How:** proxies decode lat/lng or **Geohashes** and forward to the in-memory spatial shard owning that bounding box (covers Yelp geo-routing + Nearby Friends ingestion + Uber matching).
+- **🧭 Recall:** *swallow the location firehose at the edge and route by geo-cell.*

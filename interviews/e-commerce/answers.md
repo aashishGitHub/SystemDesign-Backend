@@ -2,7 +2,7 @@
 
 > Keyed to [questions.md](./questions.md). Read the question first, then compare.
 > Every answer has a code block or comparison table so you can defend the tradeoff out loud, and ends with a **Key takeaway**.
-> This is an **umbrella topic** — depth that lives elsewhere is cross-linked, not duplicated: [kv-store](../kv-store/) (cart/Dynamo/vector clocks), [seat-reservation](../seat-reservation/) (no-oversell, TTL holds, flash sale), [distributed-transactions](../distributed-transactions/) (saga, idempotency, payment coordination), [message-queues](../message-queues/) (Kafka, outbox, DLQ), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery), [sharding-replication](../sharding-replication/) (data), [rate-limiting](../rate-limiting/) (abuse), [observability](../observability/). A dedicated **payment-system** deep-dive (ledger, PSP reconciliation, chargebacks) is ROADMAP Problem 16 — not yet built; payment coordination here delegates to [distributed-transactions](../distributed-transactions/).
+> This is an **umbrella topic** — depth that lives elsewhere is cross-linked, not duplicated: [kv-store](../kv-store/) (cart/Dynamo/vector clocks), [seat-reservation](../seat-reservation/) (no-oversell, TTL holds, flash sale), [distributed-transactions](../distributed-transactions/) (saga, idempotency, payment coordination), [message-queues](../message-queues/) (Kafka, outbox, DLQ), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery), [sharding-replication](../sharding-replication/) (data), [rate-limiting](../rate-limiting/) (abuse), [observability](../observability/). A dedicated [payment-system](../payment-system/) topic owns that depth (double-entry ledger, idempotency, PSP reconciliation, chargebacks); saga mechanics stay in [distributed-transactions](../distributed-transactions/).
 >
 > **Accuracy note:** Amazon-scale figures are order-of-magnitude *planning* numbers to verify against primary sources, not published facts.
 
@@ -336,7 +336,7 @@ Why: you shouldn't take money for goods you haven't shipped; auth confirms the c
 and funds exist, capture commits the sale at the last responsible moment.
 ```
 
-Payment coordination is a saga step (A20); deeper ledger/PSP/chargeback design → payment-system (planned).
+Payment coordination is a saga step (A20); deeper ledger/PSP/chargeback design → [payment-system](../payment-system/).
 
 **Key takeaway:** **Authorize at checkout, capture on ship** — you confirm funds up front but only move money when you actually fulfill, and a pre-ship cancel just voids the hold (no charge).
 
@@ -574,9 +574,9 @@ Refund = a compensating financial transaction; restock inventory on receipt.
 Chargeback = bank-initiated reversal → record, reconcile, dispute workflow.
 ```
 
-Deeper double-entry ledger + PSP reconciliation → payment-system (planned); order-side saga → [distributed-transactions](../distributed-transactions/).
+Deeper double-entry ledger + PSP reconciliation → [payment-system](../payment-system/); order-side saga → [distributed-transactions](../distributed-transactions/).
 
-**Key takeaway:** Treat refunds/chargebacks as **append-only ledger entries + explicit order sub-states** (never mutate the original charge — append a compensating entry), with inventory restocked on receipt; deep ledger design belongs in a dedicated payment-system topic.
+**Key takeaway:** Treat refunds/chargebacks as **append-only ledger entries + explicit order sub-states** (never mutate the original charge — append a compensating entry), with inventory restocked on receipt; deep ledger design belongs in [payment-system](../payment-system/).
 
 ---
 

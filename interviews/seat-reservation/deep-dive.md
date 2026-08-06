@@ -990,3 +990,35 @@ Follow-up questions that separate a senior answer:
 | Billion-row migration | Expand → backfill (batched) → flip → contract; gh-ost / pt-osc / CREATE INDEX CONCURRENTLY |
 | DB failover | Promote replica, fence old (STONITH); holds survive in Redis; sync-repl for RPO ≈ 0 |
 | Confirmed-without-pay incident | Roll back, quantify via reconcile, remediate, add money ⇒ seat-or-refund monitor |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern (TicketMaster):** **synchronous** primary-replica DB pairs + **Raft** distributed reservation locks.
+- **Mode:** synchronous — **RPO = 0**.
+- **Why here:** a lost write = a double-booked seat = a real-world conflict, so the booking write waits for a replica *and* consensus before confirming. Correctness strictly over latency at the money moment.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 17, TicketMaster) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** CDN for the static event page → Redis holding the **seat-map read model**, the **TTL holds** (§2), and waiting-room tokens (§7) → the authoritative booking database.
+- **Strategy:** **CQRS.** The seat map clients render is a cached **read model**, projected from the hold/booking event stream and eventually consistent by a few seconds. The **hold itself is not a cache** — a Redis `SET NX` with a TTL is the *authoritative* claim on that seat, which is why §2 and §3 treat it as a concurrency primitive rather than an optimization.
+- **Invalidation:** the seat map is invalidated by the event stream as holds and bookings land. The **hold TTL is a business rule** (a 10-minute checkout window), so its expiry is a domain event that releases inventory — not a cache eviction you may tune for hit ratio. Confusing the two is how you end up with seats that are neither held nor sellable.
+- **Why here:** the honest framing is *"the seat map may lie; the hold may not."* A stale map shows a seat that's already gone, the user clicks it, and they get a clean rejection at hold time — mildly annoying and entirely acceptable. **Overselling is prevented at the authoritative hold, never by cache freshness**, which is the same separation as the e-commerce stock badge and worth stating in both. The other half of this topic is a caching lesson by negation: the **thundering herd at drop time (§7)** is the one stampede that *no* cache can absorb, because the traffic is overwhelmingly **writes** competing for a scarce resource. That's why the answer is a **virtual waiting room** — admission control — rather than a bigger cache. Knowing when caching is the wrong tool is the senior signal here.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **virtual waiting-room queue proxy** — the edge acts as a gatekeeper during a drop.
+- **Layer:** L7 (HTTP gatekeeper).
+- **How:** it holds millions of users in a virtual line and **releases a throttled stream** (e.g. 500 req/s) to checkout, shielding the primary DB from collapse; doubles as bot protection.
+- **🧭 Recall:** *put everyone in a line and drip a safe rate through to checkout.*

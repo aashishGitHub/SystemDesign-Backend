@@ -1066,3 +1066,24 @@ Before approving any "distributed transaction" design, ask:
 | Avoid the problem | Redesign boundary (DDD aggregate) so atomic work is one local transaction |
 | Choose the model | 2PC (atomic+isolated), Saga (atomic, no isolation), eventual (just converge) |
 | Design-review reflex | Minimize the strong core; eventual + idempotent for the rest; price 2PC in latency/availability |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** no layout of its own — but the protocol you choose **constrains** the replication beneath it. 2PC requires every participant to durably log its `prepare` decision (§7). Spanner-style designs (§15) make each shard a **synchronously replicated Paxos group**, so a distributed transaction becomes **2PC layered over consensus groups** rather than over bare machines.
+- **Mode:** **synchronous wherever atomicity crosses a boundary.** A prepare record that isn't durable makes the whole protocol a lie.
+- **Why here:** the sentence worth memorizing is *"2PC over unreplicated participants is a durability lie."* The protocol's entire safety argument rests on a prepared participant being able to honor its promise after a crash — if that participant is a single unreplicated node, a disk failure between prepare and commit leaves the transaction **permanently in doubt**, which is the blocking problem of §8 in its worst form. So replication isn't an optimization you add later; it's a precondition for 2PC being correct at all. Spanner is the canonical composition to be able to name: **Paxos for replication, 2PC for cross-shard atomicity, TrueTime for external ordering** — three separate mechanisms, each doing one job. And the practical alternative from §9 is worth stating in the same breath: a **saga** avoids the whole problem by never holding a cross-service prepare, trading atomicity for compensations.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Nothing on the commit path — a cache is not a transaction participant.** It has no rollback, no isolation, and no place in the atomicity boundary. Writing to the database and the cache in one "transaction" is exactly the **dual-write problem (§2)** wearing a different hat: the DB commits, the cache update fails, and the two diverge **permanently** with no error surfaced to anyone.
+- **Strategy:** the only safe shape is **write-around plus delete-after-commit**, and the deletion must be driven by the **transactional outbox / CDC** stream (§11) so the invalidation inherits the commit's atomicity. If the outbox event is committed in the same local transaction as the data, the invalidation cannot be lost — retried, delayed, delivered twice, but not lost. And because the operation is a *delete*, duplicate delivery is harmless.
+- **Invalidation:** delete-on-commit via CDC, never update-in-place. Under concurrency an in-place update can be applied out of order and resurrect stale data; a delete is idempotent and converges.
+- **Why here:** the cache is the most common **unaudited participant** in a distributed transaction, and naming it is a strong senior signal. Two concrete traps: (1) reading a value from cache to make a write decision inside a transaction bypasses the isolation level entirely — you get a stale read with none of the anomaly protections of §13; (2) a saga's **compensating action (§9)** must invalidate every cache the forward action populated, or the rollback is invisible to readers. Interview line: *"commit to the database, emit an outbox event, let CDC invalidate. Two masters and no rollback is not a caching strategy."*

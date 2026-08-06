@@ -386,3 +386,24 @@ This is the [communication-protocols](../communication-protocols/) at-least-once
 | 48 | Frontend tracking | SSE + interpolation; snapshot-on-reconnect; throttle backgrounded |
 | 49 | Flaky network | Idempotency key + client never owns money/availability truth |
 | 50 | Price consistency | menu_version handshake; confirm authoritative total before pay |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (row 15 parallel, courier location) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** three answers in one system, matching the three paths of §1. **Orders and payments:** single-leader with synchronous commit. **Courier GPS:** an ephemeral in-memory ring plus Redis replicas (async). **Menus and catalog:** read replicas behind a CDN (async).
+- **Mode:** **synchronous on the money path, asynchronous everywhere else.** RPO = 0 for an order; RPO ≈ seconds for courier location; RPO of minutes is fine for a menu.
+- **Why here:** the same split that drives the consistency story drives the replication story, and being able to justify each independently is the point. **125K GPS writes/s** (500K couriers at ¼ Hz) *cannot* be synchronously replicated at any sane cost — and doesn't need to be, because the data is worthless within ten seconds. A **single lost order**, by contrast, is unrecoverable: the customer has been charged and no one is cooking. So the interesting sentence in a design review isn't "we replicate the database," it's *"we replicate three things three different ways, and here's the cost of losing each."* The dinner-rush peak (~5× average, ~1,200 orders/s) is absorbed by the read-replica and CDN tier, never by the order leader — which is why the leader can afford to be synchronous.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 15 parallel, courier location) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** CDN for menu images → Redis for the **menu body**, **serviceability polygons**, and **ETA components** → an in-memory geo index for **courier positions** → the order store (uncached).
+- **Strategy:** one strategy per path, matching the three-path split of §1. **Menus** are cache-aside on a version-keyed entry (`restaurant:{id}:menu:{menu_version}`) with a long TTL. **Item availability** ("sold out") is write-around behind a **5–30 s TTL**, because it changes without warning during service. **Courier GPS** is write-back to RAM with **no durable flush at all** — deliberately ephemeral. Composite ETA inputs (§7) are refresh-ahead per zone.
+- **Invalidation:** publishing a menu **bumps `menu_version`** → a new key, old one ages out, nothing to purge. Availability expires on its own. Courier positions expire on a TTL close to the ping interval, so a courier whose app dies disappears from dispatch within seconds rather than being matched to an order they can't take. **Order state is never cached** — it's the money path.
+- **Why here:** ~125K courier GPS writes/s (500K couriers at ¼ Hz) cannot touch a durable store and don't need to: that data is worthless within ten seconds, so RAM-only is the *correct* engineering choice rather than a shortcut. Meanwhile the dinner-rush peak (~5× average, ~1,200 orders/s) makes the menu cache load-bearing — a cold menu cache at 7pm is an outage. The tension worth naming: **availability staleness is directly customer-visible** (an order accepted for a sold-out item), so this is a case where a short TTL is a deliberate purchase of a small, bounded refund rate in exchange for enormous read capacity.

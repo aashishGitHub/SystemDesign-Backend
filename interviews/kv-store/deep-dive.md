@@ -865,3 +865,24 @@ Publicly documented (Discord engineering blog, 2023):
 | Hot partition | Consistent hashing balances key count, never access frequency |
 | Wrong-tool signals | Range scans, cross-key txns, secondary indexes, global linearizability |
 | LWW vs VC rule | If losing a concurrent write is a bug, you cannot use LWW |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern (Dynamo-style / FB Messenger):** this *is* the leaderless-quorum home — clients write/read a majority of peers (**W+R>N**); background **read-repair + Merkle-tree anti-entropy** heal stale replicas.
+- **Mode:** tunable per request (e.g. N=3, W=2, R=2).
+- **Why here:** no leader = no failover step and high write availability under partition; the cost is conflict handling (vector clocks / LWW / CRDT) and eventual convergence.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 5 & §2b) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** client-side cache of the **ring / preference list** → per-node **block cache** and the **OS page cache** in front of SSTables → **Bloom filters** to skip files that can't contain the key (§9).
+- **Strategy:** read-through and entirely internal — callers see an API, not a cache. The LSM read path *is* a cache hierarchy: memtable (RAM, current writes) → block cache (recently read immutable blocks) → Bloom filter (a probabilistic "definitely not here") → SSTable on disk. Note the inversion worth stating: this system is frequently *someone else's* cache tier, which is why its own p99 matters so much (§10).
+- **Invalidation:** **SSTable blocks are immutable**, so blocks are *evicted*, never invalidated — compaction (§9) retires whole files instead. The membership/ring cache is refreshed by **gossip (§8)** carrying a version, so a stale ring is detected rather than trusted.
+- **Why here:** two things generalize beyond this topic. First, **immutability makes a cache trivially correct** — an LSM never has to reason about a dirty cached block, unlike a B-tree buffer pool (see [storage-engines](../storage-engines/)). Second, the client-side ring cache is a genuine correctness hazard: caching it removes a network hop per request, but a **stale ring after a node join** routes requests to a node that no longer owns the key. Gossip plus an epoch check is what converts that from silent misrouting into a retry. Sizing rule from §12: if the working set stops fitting the block cache, the hit ratio falls off a **cliff**, not a slope, and tail latency goes with it.

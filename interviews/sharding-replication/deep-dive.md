@@ -678,3 +678,23 @@ Is write throughput > single-node capacity?
 | RTO | Recovery Time Objective — max acceptable downtime |
 | Vitess | YouTube's MySQL sharding layer — VTGate + VTTablet |
 | TAO | Facebook's distributed graph store — read-after-write per user |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> This folder is the concept home for the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (linked copy in [key-technologies-notes.md §12](../../key-technologies-notes.md)). ⚠️ Tech names in the matrix are illustrative — verify against primary sources.
+
+- The 17 systems in the matrix are just the three layouts in this folder — **single-leader** (TinyURL, Yelp, Instagram), **multi-leader / active-active** (Netflix, Uber), and **leaderless quorum** (FB Messenger, Dynamo-style) — crossed with a sync/async/semi-sync **mode** chosen by the RPO/RTO bar.
+- Reading order: pick a system from the matrix → open its folder's `deep-dive.md` "🔁" callout → return here for the general mechanics (log shipping, conflict resolution, failover — [§3](#3-replication-copies-for-safety-and-speed)/[§4](#4-consistency-under-replication-lag)) → for quorum math specifically, see [fundamentals/quorum.md](../../fundamentals/quorum.md), which also links the majority-vs-tunable distinction out to [kv-store](../kv-store/deep-dive.md#4-tunable-consistency-n-w-r-quorums) and [consensus](../consensus/deep-dive.md#13-quorum-math-and-cluster-sizing).
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** not the home topic for caching, but two things here behave like caches: the **read replica** tier (§3), and the routing/shard-map that clients cache to avoid a lookup hop (§2).
+- **Strategy:** **a read replica is a durable, query-capable cache whose TTL is its replication lag.** That reframing is the useful one — it explains why adding replicas scales reads but doesn't fix a hot shard (§6), and why replicas and caches are chosen by *query shape* rather than by habit.
+- **Invalidation:** replicas have no explicit invalidation — **lag bounds staleness**, exactly the way a TTL does, except you don't get to choose the number. Read-your-writes is restored by routing post-write reads to the leader for a short window, or by pinning the read to an LSN/version the client carries (§4). The client-cached shard map is invalidated by an epoch bump during re-sharding (§7), or requests land on the wrong shard.
+- **Why here:** the decision this topic should leave you able to make out loud: *"a read replica and a cache solve the same problem with different guarantees — the replica answers arbitrary queries, is durable, and gives you lag-bounded staleness for free; the cache is an order of magnitude faster, is disposable, and requires you to design the key and the invalidation. Pick by query shape."* Ad-hoc filters and joins → replica. A known key with a known access pattern → cache. Both, in that order, for a read path at scale. One trap to name from §4: putting a cache *in front of* an async replica compounds two staleness windows, so the effective freshness budget is `replication_lag + TTL`, not the TTL you configured — and that's the number to quote in a design review.

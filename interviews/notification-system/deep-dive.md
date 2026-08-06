@@ -736,3 +736,24 @@ A single point of failure (SPOF) is any component whose failure takes down the e
 | Capacity rule of thumb | 1M notif/sec needs ~350 FCM pods, ~333 SendGrid keys, Cassandra/DynamoDB for writes |
 | Table partitioning | Partition by week; index by `(user_id, created_at DESC)`; drop partitions > 90 days |
 | Testing in production | Shadow mode (log-only sink) + provider sandbox + canary cohort (0.1% real users) |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/) · in-topic detail: §9 above. ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** replicated **Kafka (RF=3)** for the dispatch pipeline (§3) + multi-region active-active worker fleets (§8) + the axis most systems don't have: **provider-level redundancy**, i.e. two independent push/SMS/email vendors with failover between them (§7).
+- **Mode:** **asynchronous.** A notification arriving a few seconds late is invisible; the guarantee that matters is *not losing it*, not delivering it instantly.
+- **Why here:** what's being protected here is a **queue, not a database** — and that changes the failure analysis. Losing queued messages produces **silently dropped notifications with no error surfaced to anyone**: no user complains about a message they never knew was coming, so this failure mode is invisible without explicit reconciliation metrics. That's why RF=3 on the pipeline matters more than replication of any datastore in this design. Two further points: **provider redundancy is a replication decision at the vendor layer** — APNs or an SMS gateway having an outage is far more likely than your Kafka cluster failing, so the multi-vendor path is the higher-value redundancy and it's the one candidates forget. And note the tension with §5's at-least-once semantics: **replicated retries will produce duplicate sends**, so the dedup/idempotency store must be as durable as the queue itself (see this topic's 🗄️ section) — otherwise durability improvements convert directly into duplicate-notification complaints.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** Redis for the **device-token → user** mapping, **user preferences / quiet hours**, **rendered template** fragments, **dedup / idempotency keys**, and per-user rate counters (§6).
+- **Strategy:** cache-aside for tokens and templates, but **write-through for preferences** — a user who taps "mute" must be muted on the very next dispatch, so the preference write must land in the cache synchronously, not wait for a TTL. Templates are version-keyed so a content change produces a new key. Dedup keys are write-through by nature: writing the key *is* the claim that this notification was handled.
+- **Invalidation:** **explicit delete-on-write** for preferences and tokens — an `Unregistered`/invalid-token response from APNs or FCM must evict that token immediately (§7), or you keep paying to send to a dead device and pollute your delivery metrics. Dedup keys carry a TTL sized to **at least the full retry window** (§5). Templates age out naturally once their version stops being referenced.
+- **Why here:** this is the one system in the repo where **cache staleness is user-visible and irreversible** — you cannot un-send a push notification. That single fact rules out TTL-only preference caching: a 60-second stale preference cache means a 60-second window where you send messages a user explicitly opted out of, which is a trust and sometimes a compliance problem, not a performance blemish. Note the tension with §5's at-least-once delivery: replicated retries *will* produce duplicate attempts, so the dedup store must be **as durable as the queue itself** — if it's evictable, at-least-once quietly becomes "several times." Same lesson as the idempotency store in [payment-system](../payment-system/): not everything living in Redis is a cache.

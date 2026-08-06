@@ -128,7 +128,7 @@ flowchart TB
 | Cart | **DynamoDB / Cassandra (AP)** | Never reject add-to-cart; merge conflicting versions ([kv-store](../kv-store/)) |
 | Orders | **SQL (Postgres/Spanner) + outbox** | Transactional, queryable, idempotent; the money record |
 | Inventory | **SQL guarded decrement + Redis TTL holds** | `UPDATE … WHERE stock ≥ qty`; hold during checkout ([seat-reservation](../seat-reservation/)) |
-| Payment | **Payment Service, idempotency key = order id** | Authorize at checkout, capture on ship; retry never double-charges (deep dive → payment-system) |
+| Payment | **Payment Service, idempotency key = order id** | Authorize at checkout, capture on ship; retry never double-charges (deep dive → [payment-system](../payment-system/)) |
 | Order orchestration | **Kafka + saga + transactional outbox** | Commit order + emit `OrderPlaced` atomically; async fulfillment ([message-queues](../message-queues/), [distributed-transactions](../distributed-transactions/)) |
 | Notifications | **Multi-channel service** | Order status via email/push/SMS ([notification-system](../notification-system/)) |
 

@@ -1,7 +1,7 @@
 # Deep Dive: E-Commerce Platform (Amazon / Shopify)
 
 > Each chapter has three depths: 🟢 **Beginner** (analogy + intuition), 🟡 **Senior** (implementation + tradeoffs), 🔴 **Architect** (scale, failure modes, production reality).
-> This is an **umbrella topic** — depth that belongs to a neighbouring topic is cross-linked, not repeated: [kv-store](../kv-store/) (cart / Dynamo / vector clocks), [seat-reservation](../seat-reservation/) (no-oversell, TTL holds, flash sale), [distributed-transactions](../distributed-transactions/) (saga, idempotency, payment coordination), [message-queues](../message-queues/) (Kafka, outbox, DLQ), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery), [sharding-replication](../sharding-replication/) (data), [rate-limiting](../rate-limiting/) (abuse), [observability](../observability/) (funnel SLOs). A dedicated **payment-system** deep-dive (ledger, PSP reconciliation, chargebacks) is ROADMAP Problem 16 — not yet built; payment coordination here delegates to [distributed-transactions](../distributed-transactions/).
+> This is an **umbrella topic** — depth that belongs to a neighbouring topic is cross-linked, not repeated: [kv-store](../kv-store/) (cart / Dynamo / vector clocks), [seat-reservation](../seat-reservation/) (no-oversell, TTL holds, flash sale), [distributed-transactions](../distributed-transactions/) (saga, idempotency, payment coordination), [message-queues](../message-queues/) (Kafka, outbox, DLQ), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery), [sharding-replication](../sharding-replication/) (data), [rate-limiting](../rate-limiting/) (abuse), [observability](../observability/) (funnel SLOs). A dedicated [payment-system](../payment-system/) topic owns that depth (double-entry ledger, idempotency, PSP reconciliation, chargebacks); saga mechanics stay in [distributed-transactions](../distributed-transactions/).
 >
 > **Accuracy note:** Amazon-scale figures below are order-of-magnitude *planning* numbers to verify against primary sources, not published facts. Claims about *how a specific vendor implements* something are hedged ("verify") — informed illustration, not authoritative internals.
 
@@ -195,7 +195,7 @@ See A15–A19.
 
 ### 🔴 Architect — Authorize-then-capture, and taming a hot SKU
 
-**Authorize at checkout, capture on ship.** Authorize places a reversible hold confirming the card is good and funds exist; capture moves money at the last responsible moment — when the item ships. A pre-ship cancel just voids the hold, so the customer is never charged for goods that didn't ship. Deep ledger/PSP/chargeback design is the planned payment-system topic; the order-side coordination is a saga step (Ch. 5).
+**Authorize at checkout, capture on ship.** Authorize places a reversible hold confirming the card is good and funds exist; capture moves money at the last responsible moment — when the item ships. A pre-ship cancel just voids the hold, so the customer is never charged for goods that didn't ship. Deep ledger/PSP/chargeback design is covered in [payment-system](../payment-system/); the order-side coordination is a saga step (Ch. 5).
 
 Concurrency-wise, an **optimistic / CAS** decrement scales better than pessimistic row locks under normal contention. Under *extreme* contention on one SKU (a flash-sale row 100K people hit at once), even the optimistic path makes that SQL row a hot lock — so you front it with a Redis atomic counter or a queue (Ch. 6). Capturing at checkout instead of authorize-then-capture, and dual-writing the order without an outbox, are the two classic money-path mistakes.
 
@@ -329,7 +329,7 @@ Depth: [sharding-replication](../sharding-replication/), [consistent-hashing](..
 
 ### 🔴 Architect — A hot key is cache + coalesce, not more shards
 
-A viral product read-storm is not a sharding problem — adding shards doesn't help a *single* key. You cache it hard (CDN + Redis) and **request-coalesce** origin misses so a stampede of concurrent misses becomes one DB read fanned back to all waiters. A hot *seller* or hot *SKU* is different — genuine write/ownership skew, handled with a dedicated shard / further split. Returns and refunds ride an **append-only payment ledger** (authorize / capture / refund / chargeback are ledger entries tied to `order_id` — never mutate a charge, append a compensating entry) plus explicit order sub-states (`RETURN_REQUESTED → RETURN_RECEIVED → REFUNDED`), stock restocked on receipt; deep ledger design is the planned payment-system topic.
+A viral product read-storm is not a sharding problem — adding shards doesn't help a *single* key. You cache it hard (CDN + Redis) and **request-coalesce** origin misses so a stampede of concurrent misses becomes one DB read fanned back to all waiters. A hot *seller* or hot *SKU* is different — genuine write/ownership skew, handled with a dedicated shard / further split. Returns and refunds ride an **append-only payment ledger** (authorize / capture / refund / chargeback are ledger entries tied to `order_id` — never mutate a charge, append a compensating entry) plus explicit order sub-states (`RETURN_REQUESTED → RETURN_RECEIVED → REFUNDED`), stock restocked on receipt; deep ledger design is covered in [payment-system](../payment-system/).
 
 ---
 
@@ -438,7 +438,7 @@ Two rules keep a flaky-network client correct: every mutating action carries an 
 - **Authorize-then-capture is standard PSP practice.** Holding funds at checkout and capturing on ship (voiding on pre-ship cancel) is the normal integration pattern across major payment processors — not a vendor-specific trick.
 - **Event-driven order pipelines + transactional outbox are common.** Committing the order and an outbox row in one txn, with a relay publishing to a log like Kafka, is a widely-used way to avoid dual-write loss. Broker and topology vary by company; keep the claim generic and **verify** any named vendor's internals.
 - **Keep vendor claims generic and hedged.** It's stronger to say "the Dynamo-style AP cart" or "an outbox-plus-saga pipeline" than to assert a named company implements X exactly — you defend the *pattern* and its tradeoffs, which is the point.
-- **Payment-system is a dedicated topic (planned).** Ledger, PSP reconciliation, and chargebacks live in ROADMAP Problem 16 — **not yet built**. Until then, payment coordination delegates to [distributed-transactions](../distributed-transactions/) (saga + idempotency).
+- **Payment is a dedicated topic:** [payment-system](../payment-system/). Double-entry ledger, idempotency keys, the never-trust-a-timeout rule, PSP reconciliation, refunds/chargebacks, and payouts all live there. Saga + idempotency *mechanics* remain in [distributed-transactions](../distributed-transactions/); here payment is one authorize-then-capture step in the order saga.
 
 ---
 
@@ -492,3 +492,24 @@ FRONTEND     SSR/SSG/ISR the SEO shell; stream personalization client-side after
              client NEVER owns money/availability truth; ambiguous send → re-query by key
              Core Web Vitals = conversion; code-split, CDN images, prefetch next step
 ```
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** one system, three replication answers, chosen by the consistency gradient of §1. **Catalog/browse:** single-leader + read replicas + CDN (async). **Cart:** leaderless/AP, availability-first, concurrent versions merged rather than rejected (§3). **Orders and inventory:** single-leader synchronous (§4).
+- **Mode:** mixed and deliberately so — async for browse, async-with-merge for cart, **synchronous for the money path**.
+- **Why here:** this is the clearest "don't pick one replication strategy for the whole system" example in the repo, and each choice has a one-line business justification. A **rejected cart write is lost revenue**, so the cart takes availability over consistency and reconciles later — a duplicated cart line is a support ticket, a failed "add to cart" is a lost sale. A **lost or duplicated order is a legal problem**, so orders take RPO = 0. And the ~40× Prime-Day-style peak is absorbed entirely by **read replicas plus cache**, never by the order leader — which is precisely what makes it affordable to keep that leader synchronous. Note the interaction with the 🗄️ section above: putting a cache in front of an async replica means the effective staleness is `replication_lag + TTL`, so the browse path's freshness budget has to account for both.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** browser → CDN (product pages, images) → API gateway → Redis (catalog body, price/availability overlay, session, cart) → DB read replicas → primary.
+- **Strategy:** split by volatility, exactly mirroring the consistency gradient of §1. The **immutable product body** is cache-aside with a **version-keyed** entry (`product:123:v87`) and effectively an infinite TTL. The **volatile price/stock overlay** is write-around behind a **short jittered TTL** (5–30 s). The **cart and session** are write-through, because a customer must see the item they just added. Ranked/"top products" lists are refresh-ahead into Redis sorted sets.
+- **Invalidation:** bumping the product version produces a **new key**, so the old one is never read again and ages out — no purge to get wrong. CDN objects are dropped by **surrogate-key purge** on catalog publish. The stock badge simply expires. Critically, the **authoritative stock check happens at checkout against the primary (§4)** — never from cache.
+- **Why here:** at roughly 1000:1 reads:writes and ~10⁶ views/s at peak, the cache is not an optimization — it is the **only** reason the design is affordable. A 99% hit ratio still leaves ~10,000 QPS on the primary, which is why §8's capacity math targets >99.9%. The existential failure mode is a **stampede on a flash-sale SKU**: one hot key expires and the whole peak lands on one row. Defence is the standard trio — **single-flight per key, jittered TTLs, stale-while-revalidate** — plus a warm-up before a known drop. And the line that resolves the apparent contradiction: *"the stock badge is a cached UX hint; overselling is prevented by the authoritative check at the money moment, not by cache freshness."*

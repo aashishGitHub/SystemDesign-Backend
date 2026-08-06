@@ -916,3 +916,35 @@ Cost:       storing 182B+ rows indefinitely grows unboundedly. Tier COLD links t
 | Alias reclaim risk | Reclaiming expired alias hijacks still-circulating old links → don't reclaim by default |
 | 7→8 char migration | Config-only, non-breaking: old codes resolve forever, new codes get 62× more room |
 | Cascade root cause | Cold cache + retry storm + failover-into-load; fix with breakers, coalescing, backoff, staged warming |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** single-leader write DB + read replicas, fronted by a replicated Redis cluster.
+- **Mode:** asynchronous — a redirect tolerates a few ms of staleness.
+- **Why here:** ~100:1 read:write; replicas across regions serve redirects while the leader owns short-link creation; a dead node triggers VIP/automated failover. RPO is loose (a just-created link can be recreated); RTO must be low (redirects are the product).
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 1, TinyURL) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** the **browser** (via the redirect status code) → CDN → Redis (§5) → DB read replicas.
+- **Strategy:** textbook **cache-aside** on a roughly 100:1 read-heavy workload where the cached value — a short code's target URL — is effectively **immutable**, so TTLs can be long and hit ratios very high. **Negative caching** matters as much as positive here: briefly caching "this code does not exist" is what stops enumeration and scanner traffic from turning every 404 into a database query (§8).
+- **Invalidation:** barely needed, since a mapping rarely changes. The consequential decision is **`301` vs `302` (§4)**: a `301 Moved Permanently` lets the *browser* cache the redirect indefinitely, which is the cheapest possible serve — and also destroys your click analytics and makes revocation impossible, because you can't purge a cache that lives on a million devices. A `302` keeps every redirect observable and revocable at the cost of the request. That is a **caching trade dressed as an HTTP detail**, and recognizing it is the point of the section.
+- **Why here:** this is the canonical ">99% hit ratio" design and a good place to rehearse the arithmetic: origin load is `QPS × (1 − hit_ratio)`, so 99% of 10⁶ redirects/s still leaves **10,000 QPS** on the database while 99.9% leaves 1,000 — the last nine is the one that saves you. Because the data is small, immutable, and Zipf-distributed, this system gets closer to a perfect cache than anything else in the repo, which is exactly why it's the warm-up problem: the caching story has no hard tradeoffs to hide behind, so the interviewer is really checking whether you quote hit ratio, negative caching, and the `301` trap unprompted.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** L7 reverse proxy / API gateway doing **read/write traffic splitting** + hash-based routing.
+- **Layer:** L7 (HTTP) — it reads the method.
+- **How:** `GET /{key}` → read-optimized cache clusters; `POST /shorten` → write workers; `hash(id)%N` at the edge routes straight to the owning shard, skipping app hops.
+- **🧭 Recall:** *split reads from writes and route by key right at the door.*

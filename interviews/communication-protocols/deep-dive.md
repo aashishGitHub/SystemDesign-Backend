@@ -841,3 +841,34 @@ Retry with FULL JITTER (avoid synchronized retry storms / thundering herd):
 | Circuit breaker | 5 fails → OPEN (fail fast 30s) → HALF-OPEN probe → CLOSED; retry with full jitter |
 | Cross-boundary tracing | Propagate `traceparent`/correlation id via HTTP headers, Kafka headers, gRPC metadata |
 | Which tech (one-liners) | Public CRUD→REST; internal low-latency→gRPC; flexible fetch→GraphQL; routed tasks→RabbitMQ; high-throughput events→Kafka; fan-out→SNS/SQS; real-time chat→WebSocket |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (row 6 mechanism, Kafka RF=3) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **Kafka partition replication** is the one first-class replication story in this topic (§7): each partition has a leader and followers, and the **ISR** (in-sync replica set) defines who is currently eligible to be promoted. RabbitMQ's equivalent is **quorum queues** (§6), which use a Raft-based log rather than the older mirrored-queue approach.
+- **Mode:** set by three configuration knobs, and knowing them is the point: **`acks=all` + `min.insync.replicas=2`** is effectively semi-synchronous and gives RPO = 0 as long as no more than one replica is down; **`acks=1`** is asynchronous and silently loses the tail of the log when a leader dies; **`acks=0`** is fire-and-forget.
+- **Why here:** this is the highest-value configuration trio in messaging interviews, and the third knob is the one that separates levels: **`unclean.leader.election.enable`**. Setting it `true` lets an out-of-sync replica be promoted so the partition stays writable — trading **durability for availability**, and silently discarding committed messages when it fires. Setting it `false` means a partition with no in-sync replica simply **stops accepting writes** until one returns. Both are defensible; picking one without knowing you picked is how public data-loss incidents happen. The trap worth naming explicitly: `acks=all` **alone** guarantees nothing useful — if `min.insync.replicas=1`, "all" can mean the leader by itself, so you believe you have RPO = 0 while running with none. The two settings only mean anything together, which is exactly the kind of interaction §10's reliability discussion is about.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** for REST, the entire HTTP cache hierarchy comes free — browser, proxy, CDN, gateway. For gRPC streams, WebSockets, and SSE: **none by default**, because the transport gives shared caches nothing to key on.
+- **Strategy:** **REST is cacheable by construction** — a uniform interface plus safe `GET` semantics means intermediaries can cache without knowing anything about your domain. **GraphQL over `POST /graphql` is opaque to HTTP caches**, so it must move caching into the client as a **normalized, entity-keyed store**, plus server-side persisted queries to recover some cacheability. gRPC unary calls can cache at the application layer but get no help from the wire protocol.
+- **Invalidation:** TTL/ETag for REST; entity-level cache updates for normalized GraphQL clients; for Kafka consumers there is nothing to invalidate — the log is append-only and **retention is the eviction policy**.
+- **Why here:** "REST is cacheable, GraphQL isn't (over HTTP)" is one of the highest-signal tradeoffs in this topic — it's a real cost of GraphQL's flexibility, not a fixable oversight, and naming it shows you've deployed both. The second point worth making: **Kafka's read path (§7) relies on the OS page cache**, not a cache of its own. It writes and reads the same sequential region, so recent messages are RAM-resident for free — which is why a consumer that falls behind starts hitting disk and degrades everyone else's latency (see [message-queues](../message-queues/)).
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Concept home for the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix (linked from [key-technologies-notes.md §4/§5](../../key-technologies-notes.md)). ⚠️ Tech names in the matrix are illustrative — verify against primary sources.
+
+- **This folder owns the L4-vs-L7 distinction** every proxy hangs off: **L4** = fast + dumb (routes by IP/port, raw TCP/UDP/WebSocket); **L7** = smart + heavier (reads HTTP/gRPC headers/path, does TLS + auth).
+- **In plain words:** *L4 forwards the sealed envelope by address; L7 opens the letter and decides.*
+- **Rule of thumb:** persistent/raw connections start **L4**; anything needing content routing or auth is **L7**. WebSocket/gRPC/HTTP-3 are the protocols these proxies must speak.

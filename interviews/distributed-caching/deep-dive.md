@@ -958,3 +958,24 @@ Is the data read more than written?
 | Cache warming | Proactively populate before traffic hits |
 | Circuit breaker | Stop hammering failed cache, use fallback |
 | Eviction policy | allkeys-lru (Redis) — most common choice |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **replicate vs partition is the core decision.** Redis Cluster **partitions** the keyspace (each shard gets a replica purely for failover), while a small, extremely hot dataset is sometimes **fully replicated to every node** so any node can answer any key with no routing hop and no cross-node hot spot.
+- **Mode:** **asynchronous** — Redis primary→replica replication is async, so a failover can lose the most recent writes. For a cache that's usually fine; for anything you actually need (an idempotency key, a rate-limit counter) it is not, and that's the boundary to police.
+- **Why here:** this topic has a justification for replication unlike anything else in the repo, and it's worth saying out loud: **you replicate a cache to protect your database, not to protect the data.** The cached data is disposable by definition — what you're guarding against is the **miss storm** a node death inflicts on the origin. That reframes the sizing question from "how much durability do I need?" to "can my origin survive losing this fraction of my cache?", and it's the argument that justifies the spend to a skeptical reviewer. Two consequences: replicas should sit in **different failure domains** for the same reason as any other replication (an AZ loss taking out half your cache tier is an origin outage), and because the async mode means a failover **loses recent writes**, correctness state must not live in the same instance as cache state — see the `noeviction` argument in [payment-system](../payment-system/)'s 🗄️ section. The read-heavy alternative worth naming: adding **read replicas per shard** scales cache reads, but does nothing for a single **hot key**, which needs key-splitting or full replication instead.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> **This topic is the concept home** for the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) — every other folder's 🗄️ callout links back here. Decision table: [key-technologies-notes.md §22](../../key-technologies-notes.md). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** the full hierarchy this repo assumes elsewhere — **L1 in-process** (Caffeine/Guava, nanosecond reads, per-instance and therefore inconsistent across replicas) → **L2 shared** (Redis/Memcached, sub-millisecond, one coherent view) → origin (§7).
+- **Strategy:** all six patterns compared side by side in §2 — cache-aside, read-through, write-through, write-back, write-around, refresh-ahead — with eviction (§3) and Redis internals (§4) as the implementation substrate. The one rule that generalizes: **on a write, delete the key rather than updating it.** Deletes are idempotent and self-healing under reordering; updates race with concurrent fills and can write a *stale* value back over a fresh one.
+- **Invalidation:** §5 covers the pattern catalogue; §6 covers what happens when it fails. The hierarchy of correctness, cheapest-correct first: **versioned/immutable key** > CDC/outbox-driven delete > delete-on-write > TTL alone.
+- **Why here:** this folder is also where the **cache's own replication** story lives, and it has a justification unlike any other topic in the repo: **you replicate a cache to protect your database, not to protect the data.** A Redis Cluster shard with a replica isn't guarding against data loss — the data is disposable — it's guarding against the miss storm a node death would inflict on the origin. That reframing (§6 failure modes) is the architect-level point: past a certain hit ratio the cache stops being an optimization and becomes **load-bearing capacity**, at which point it needs its own capacity plan, failover story, and documented cold-start warm-up path.

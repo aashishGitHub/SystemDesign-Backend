@@ -1155,3 +1155,24 @@ that truly needs one answer, and let everything else run cheap and available.
 | Keep off hot path | Consensus for leadership/routing/config; data plane replicates cheaply, hits leader directly |
 | When NOT to use it | Mergeable/eventual data → CRDTs or Dynamo-style; give up global order, keep availability |
 | Disk fsync | Consensus commit latency tracks fsync; give the log dedicated fast SSD/NVMe |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (rows 4 & 17, Dropbox metadata / TicketMaster) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** this topic **is** the mechanism every other folder's failover depends on — a **replicated state machine** driven by an ordered log (§2), with a leader elected by majority vote and every entry committed only once a **quorum** has it durably. Replication factor = cluster size, conventionally 3 or 5.
+- **Mode:** **synchronous by definition.** A write is not committed until a majority has persisted it, so **RPO = 0** and there is no configuration in which it isn't. RTO is bounded by the election timeout — typically hundreds of milliseconds to a few seconds.
+- **Why here:** Dropbox's metadata (matrix row 4) and TicketMaster's seat truth (row 17) both delegate "never lie, never split-brain" to exactly this. The sizing math is the part to have ready: tolerating `f` failures needs `2f + 1` nodes, so 3 nodes survive 1 and 5 nodes survive 2 — but every extra node makes each commit more expensive, which is why you scale consensus clusters *out* by sharding into many small groups rather than growing one. The other half is that synchronous replication makes **reads** expensive too, which is the entire reason for the leader-lease and `ReadIndex` optimizations in §15 (and see this topic's 🗄️ section — those are the only safe way to "cache" a consensus value).
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, follower reads under a lease) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Deliberately none on the commit path — and that's the answer, not an omission.** A cached committed value is just an **unverified replica**. Serving a read from it breaks linearizability, which is the only property you paid a quorum round-trip to obtain. If you can tolerate a stale answer here, you did not need consensus.
+- **Where caching *is* legitimate:** reads gated on a **freshness proof** — a `ReadIndex` round or a **leader lease** (§15). Both let a node answer locally *while proving* no newer commit exists, which is precisely a cache with a validity certificate. Also legitimate: **client-side watch caches** (the ZooKeeper/etcd pattern) — the client caches a value and the server **pushes an invalidation** when it changes, so staleness is bounded by notification latency rather than by hope.
+- **Invalidation:** by lease expiry or by watch notification — never by TTL alone. A TTL says "probably fine"; a lease says "provably fine until time T." That difference is the entire section.
+- **Why here:** this is the topic that teaches *why* every other caching decision in the repo is a tradeoff and not a free win. Interview line: *"you may cache the result of consensus only if you can prove the value hasn't changed — a lease or a ReadIndex. Otherwise you've replaced a quorum with a guess and kept none of the guarantees."* The practical corollary in §16 (when NOT to use consensus): if your access pattern is read-mostly and staleness-tolerant, the right design is a cache in front of a cheaper store, **not** a consensus cluster you then undermine with a cache.

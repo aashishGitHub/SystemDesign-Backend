@@ -1770,3 +1770,24 @@ Option 4: Transfer learning from similar existing items
 | Anti-pattern: naive A/B test | Social sharing between experiment groups contaminates results; use cluster-based experiment cells. |
 | Anti-pattern: one surface | Explore ≠ Home Feed ≠ Search ≠ Email; each needs its own candidate generator and ranking model. |
 | Feedback signal hierarchy | TikTok: watch-fraction > replay > like. YouTube: watch time > CTR. Amazon: purchase > cart > click. |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (row 14 partner, Yelp reviews/ranking) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **Kafka with RF=3** for the signal firehose (§3) + async read replicas or multi-region replicas of the precomputed feed store (§10) + a **vector/ANN index that is rebuilt rather than replicated** (§7).
+- **Mode:** **asynchronous at every layer.** Nothing here is money, and nothing is user-visibly wrong when it lags.
+- **Why here:** the notable decision is **rebuild, don't replicate**. The ANN index and the embeddings are *derived data* whose source of truth is the Kafka log and the offline pipeline, so the cheapest and most reliable recovery is **recomputation from the log** rather than replica management — and it has the side benefit that a corrupted index is fixed by the same path as a lost one. Kafka is therefore the only thing here that genuinely needs a durable replication factor: lose the log and you lose the ability to rebuild everything downstream. Set against that, a lost impression event costs nothing measurable and a ten-minute-stale feed costs nothing at all (§15), which is what licenses async everywhere and keeps this system cheap despite its size.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** Redis holding a **precomputed feed per user** (§10) → an embedding cache → the ANN/vector index held resident in RAM (§7) → the offline pipeline that produces all of it.
+- **Strategy:** **refresh-ahead is the whole architecture**, which is why §1 insists on two pipelines and never one. The offline path computes candidates and writes the cache; the online path is read-only and does little more than fetch, filter, and rank. Nothing expensive — no embedding lookup, no model inference over the full catalogue — happens inside the request.
+- **Invalidation:** a TTL for the baseline, plus **event-driven refresh on strong signals** (a purchase or an explicit "not interested" should visibly change the feed, not wait out a TTL). Embeddings are version-keyed by model version, so a model redeploy produces new keys rather than a fleet-wide purge. §11 is right that this is the hardest part: a user's taste shifts *mid-session*, so the EMA update (§6) has to either invalidate the cached list or re-rank it at serve time.
+- **Why here:** this is the rare cache where **a miss must still return something good** — never a spinner, never an empty feed. That's what makes cold start (§12) a caching problem as much as an ML one: the fallback on a miss is a popularity-based or segment-based default, so the user experiences a *less personal* feed rather than a *broken* one. Two more points worth making: the precomputed feed is a **read model**, so the honest framing is CQRS rather than "a cache in front of a database" — the source of truth for a recommendation is the pipeline, not a table. And staleness here is remarkably cheap: a ten-minute-old recommendation costs nothing, which is exactly why every layer in §15 can pick speed over freshness.

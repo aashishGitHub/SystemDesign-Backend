@@ -1207,3 +1207,36 @@ Tradeoff:
 | Dedup ratio | logical_bytes / physical_bytes, typically 2.5-4x |
 | WebSocket scale | 50K connections per server, use Redis Pub/Sub for fan-out |
 | Bit rot detection | Periodic background job re-hashes chunks, compares |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Dropbox pattern:** Reed-Solomon **erasure coding** for file blocks (~1.5× overhead vs 3× full replication) + **Paxos/Raft consensus** for folder metadata.
+- **Pastebin pattern:** multi-AZ erasure-coded object storage (async) + primary-replica metadata DB.
+- **Mode:** **synchronous** for metadata (RPO=0 — the namespace must never lie), async for the bulk media.
+- **Why here:** durability is the whole product (11 nines); erasure coding buys it cheaply, consensus keeps the metadata strictly correct.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 2 & 4, Pastebin/Dropbox) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** client-local chunk cache → CDN for hot downloads → Redis for **file/namespace metadata** → the dedup index → blob storage.
+- **Strategy:** cache-aside over **content-addressed chunks** (§1). Because a chunk's key *is* the hash of its bytes, the chunk at that key can never change — so every layer may cache it indefinitely, and the client-local cache doubles as the sync protocol's optimization (§2: don't upload a chunk whose hash the server already has). Metadata is cache-aside with a short TTL.
+- **Invalidation:** **for chunks, none exists** — different content produces a different hash, therefore a different key. Metadata is explicitly invalidated on namespace mutation (rename, move, delete), because that's the mutable part. Presigned download URLs carry a TTL for **authorization**, which is deliberately not a freshness mechanism and shouldn't be confused for one.
+- **Why here:** this is the best example in the repo of **designing the key so that invalidation never happens** — the single cheapest correct caching decision available anywhere, and worth stating as a general principle rather than a Dropbox trivia fact. The asymmetry to name: the **immutable** half (chunks) gets aggressive caching at every layer for free, while the **mutable** half (the metadata namespace) needs strong consistency and gets almost no caching — which is exactly why §4 puts metadata on a different storage system with different guarantees than the blocks.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Dropbox:** a **streaming reverse proxy** terminates client TCP and streams **4 MB chunks** to storage workers; a separate **long-poll gateway** parks millions of idle client connections to push "file changed."
+- **Pastebin:** the edge gateway routes **small metadata → SQL/NoSQL** but **large paste BLOBs → object storage** directly.
+- **Layer:** L7 (chunked HTTP).
+- **🧭 Recall:** *stream big files through; park millions of waiting connections cheaply.*

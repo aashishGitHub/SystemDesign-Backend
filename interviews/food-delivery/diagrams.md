@@ -483,3 +483,90 @@ sequenceDiagram
 - A synchronous call chain for the order flow (a slow dispatch/notify service stalls placement).
 - Blocking order placement on dispatch (dispatch is downstream and event-driven — degrade, don't block).
 - Forgetting the transactional outbox → "order committed but nobody dispatched."
+
+---
+
+## Diagram 13 — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** this is the single whiteboard diagram to reproduce from memory. It folds the three paths, all actors, every datastore **labeled with its type**, the async backbone, and the dispatch loop into one picture. Draw it in the numbered order below and narrate each stroke. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+
+```mermaid
+flowchart TD
+    CUST["Customer app"]
+    REST["Restaurant app"]
+    COUR["Courier app"]
+
+    GW["② API Gateway + L7 LB\nauth · rate-limit · route"]
+    CUST --> GW
+    REST --> GW
+    COUR --> GW
+
+    subgraph BROWSE["③ BROWSE PATH — read-heavy · EVENTUAL · p99 sub-100ms"]
+        direction TB
+        DISC["Discovery / Search\ngeo serviceability (S2/H3)"]
+        ES[("Elasticsearch\n🔎 inverted index (search)")]
+        MC[("Redis + CDN\n⚡ cache — menu by version")]
+        MENU[("Menu / Catalog\n🗄️ Postgres (RDBMS, source of truth)")]
+        DISC --> ES
+        DISC --> MC --> MENU
+    end
+
+    subgraph ORDERP["④ ORDER PATH — write · STRONG / ACID · idempotent"]
+        direction TB
+        OSVC["Order Service\nguarded decrement · authorize · create"]
+        ODB[("Orders + Inventory + OUTBOX\n🗄️ Postgres (RDBMS, ACID) — UNIQUE idem key")]
+        PAY["Payment\nauthorize → capture on accept"]
+        OSVC --> ODB
+        OSVC --> PAY
+    end
+
+    subgraph TRACK["⑥ TRACK PATH — write-heavy stream · EPHEMERAL · 125K w/s · ~3M conns"]
+        direction TB
+        LOC["Location ingest"]
+        GEO[("Redis / in-mem geo\n⏱️ TTL, NOT durable (courier locations)")]
+        PS{{"Pub/Sub backplane\n(Redis / Kafka)"}}
+        TGW["WS/SSE Gateway\n~30 nodes, sticky by order_id"]
+        LOC --> GEO --> PS --> TGW
+    end
+
+    KAFKA{{"⑤ Kafka event bus\nOrderPlaced · Accepted · Dispatched · Delivered"}}
+    DISP["⑦ Dispatch / Matching\nprep-aware JIT: dispatch_at = ready_at − travel"]
+
+    GW --> DISC
+    GW --> OSVC
+    GW --> TGW
+    COUR -->|"GPS every 4s"| LOC
+    ODB -.->|"outbox relay / CDC"| KAFKA
+    KAFKA -.->|notify| REST
+    KAFKA -.->|plan| DISP
+    DISP -.->|"assign courier"| COUR
+    TGW -.->|"live location + ETA"| CUST
+
+    style BROWSE fill:#dbeafe,stroke:#1d4ed8
+    style ORDERP fill:#dcfce7,stroke:#16a34a
+    style TRACK fill:#fed7aa,stroke:#ea580c
+    style KAFKA fill:#fef9c3,stroke:#ca8a04
+    style DISP fill:#fef9c3,stroke:#ca8a04
+```
+
+**Store-type legend (say the type, not the brand):**
+
+| Component | Store **type** | Defensible pick | Why this type |
+|---|---|---|---|
+| Menu / Catalog, Orders, Inventory | **RDBMS (ACID, B-tree)** | Postgres | Transactions + `UNIQUE` idempotency + guarded decrement |
+| Menu cache / product body | **Distributed cache + CDN** | Redis + CloudFront | Reads dominate; immutable version key → long TTL |
+| Restaurant/dish search | **Inverted index** | Elasticsearch | Fuzzy/faceted search; CDC-fed, not the truth |
+| Courier locations | **In-memory + TTL, geo-indexed** | Redis GEO / grid | 125K writes/s, ephemeral — never the order DB |
+| Event backbone / outbox relay | **Log / stream** | Kafka | Replayable, many consumer groups, absorbs spikes |
+| Serviceability / matching | **Geospatial index** | S2 / H3 | Cell lookup instead of full scan |
+
+**Draw it in this order (and what to say):**
+1. **Three actors** (customer, restaurant, courier) — "3-sided marketplace; the restaurant is a first-class actor."
+2. **Gateway** — "auth, rate-limit, routing — one front door."
+3. **Browse path (blue)** — "~90% of traffic, eventual, served from cache/CDN + search; DB touched rarely."
+4. **Order path (green)** — "small volume (~1,200/s peak) but must be perfectly correct: guarded decrement = no oversell, idempotency key = no double-charge, order+event in one txn (outbox)."
+5. **Kafka** — "everything after commit is an event → a dinner-rush spike is a backlog, not a meltdown."
+6. **Track path (orange)** — "the real scale problem: 125K GPS writes/s to an ephemeral TTL store, ~3M live connections fanned out via pub/sub — kept off the order DB."
+7. **Dispatch loop** — "prep-aware JIT: assign the courier to arrive when the food is ready; the prep-time estimate is the linchpin."
+
+**One-line thesis to close:** *"Three paths, three store types — cache for browse, ACID for order, ephemeral geo for track — glued by an event bus so failures compensate and spikes buffer."*

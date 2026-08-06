@@ -1208,3 +1208,24 @@ Questions that separate a senior answer in a design review:
 | Per-customer w/o label | Traces / wide events / exemplars, not a high-cardinality metric label |
 | Silent failure | 200 with bad body / un-instrumented path → green dashboards; use outcome-based SLIs + probes |
 | Observability-driven dev | Design instrumentation up front (SLI, RED, spans, log fields) so first incident is debuggable |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** the deliberately unusual one — **duplicated independent collection rather than replication.** The Prometheus-style HA answer is to run **two identical scrapers** against the same targets and deduplicate at query time (Thanos/Cortex-style), not to build a consensus cluster. Long-term retention is then delegated to **object storage**, which supplies durability as a service.
+- **Mode:** **asynchronous**, and often not replication at all — "run two and dedupe" is closer to redundancy in the hardware sense.
+- **Why here:** this is worth a section precisely because it **breaks the pattern the rest of the repo teaches**, and knowing *why* is the senior signal. Two scrapers polling the same target produce near-identical series, so you get a redundant copy for free without any coordination protocol — no leader election, no quorum, no split-brain. That's dramatically cheaper than consensus and it's **adequate because a gap in a metric series is not a correctness bug**; you lose resolution, not truth. Paying for RPO = 0 on telemetry would be spending ledger-grade money on data whose whole purpose is to be approximate. The constraint that *does* matter here has nothing to do with replication mode: **your monitoring must not share a failure domain with the system it monitors.** A perfectly replicated observability stack in the same region, cluster, or cloud account as the thing it watches goes blind at exactly the moment you need it — which is the real availability requirement (§14), and the one chaos exercises should be testing.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, recording rules) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** a query-result cache in the dashboard/query layer → **recording rules and downsampled rollups** (a *materialized* cache) → the TSDB → long-term object storage.
+- **Strategy:** **refresh-ahead is the real answer here, not read caching.** Recording rules precompute expensive aggregations **at ingest** and store them as new series, so the dashboard queries a cheap pre-aggregated series instead of re-scanning raw samples on every refresh. Downsampled rollups (1m → 5m → 1h) extend the same idea across retention tiers. A read-side result cache sits in front of that for repeated identical panel queries.
+- **Invalidation:** time-series data is **append-only and immutable per timestamp**, so closed intervals never go stale and can be cached almost indefinitely. The one thing you must **never** cache is the **still-open current window** — it's incomplete by definition, and caching it produces the classic "the graph says we're fine" during an active incident. Rollups are recomputed rather than invalidated when a late-arriving sample lands.
+- **Why here:** an observability stack is uniquely capable of **DoS-ing itself**: 50 panels × a 30 s auto-refresh × 100 engineers watching during an incident is a query storm that peaks *exactly* when the system is least healthy. Pre-aggregation is the only structural fix; a result cache alone just moves the problem. Two connections worth making: the **cardinality problem (§4)** is a cache-sizing problem in disguise — high-cardinality labels blow out the index that has to stay memory-resident — and the cost discussion (§13) is largely about how much you pre-compute versus how much you re-scan. Finally, an architectural constraint that overrides all of it: **your monitoring's caches must not share a failure domain with the system being monitored**, or they go blind together.

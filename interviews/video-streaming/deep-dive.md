@@ -970,3 +970,36 @@ Rollout:
 | Corrupt segment incident | Validate decode in CI; canary encoder rollout; keep raws for rollback |
 | Queue priority inversion | Separate SQS queues per job type (transcode vs thumbnail vs subtitle) |
 | Analytics anti-pattern | Never run `SELECT COUNT(*)` on 100M watch-progress rows in OLTP |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **YouTube:** multi-tier **CDN dynamic replication** (origin → regional → edge); popularity scales a video from 1 copy to 1000+ edge copies by view count.
+- **Netflix:** multi-region **active-active** (Cassandra) + EVCache; a whole AWS region can be evacuated via DNS failover without interrupting streams.
+- **Mode:** async (cross-region / edge).
+- **Why here:** the read path is the firehose — replicate hot content toward viewers; write-side viewing history converges cross-region eventually.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 7–8, YouTube/Netflix) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** the **player's own buffer** (the first and most important cache) → browser cache → edge PoP → mid-tier/shield → origin storage (§5).
+- **Strategy:** the whole design rests on one split. **Media segments are immutable and versioned by filename** (`.ts`/`.m4s` chunks), so every layer caches them indefinitely with no coordination. The **manifest is the volatile part** and gets a short TTL — seconds for live. On top of that, VOD catalogues are **pre-positioned** rather than pulled: because the library is known in advance, popular content is pushed into edge caches off-peak (matrix row 8), which makes caching a *scheduling* problem instead of a demand-prediction one.
+- **Invalidation:** essentially **never for segments** — a re-encode produces new filenames, the versioned-key pattern at petabyte scale. Manifests expire on a seconds-scale TTL, and for live streaming **that TTL sets your latency floor**: a 6-second manifest TTL means viewers are at least 6 seconds behind, which is why low-latency live (§9) is largely a fight to shrink or bypass it.
+- **Why here:** at this scale **hit ratio is a bandwidth bill, not a latency nicety** — a 1% miss rate against petabyte-scale egress is a real line item, so §10's economics are as much about cache efficiency as about buffering. The immutable-segment/mutable-manifest split is the single most reusable idea in the topic: it's the same structure as an LSM's immutable SSTables plus a mutable manifest (see [storage-engines](../storage-engines/)), and the same trick as version-keyed product bodies in [e-commerce](../e-commerce/). Two failure modes worth naming: ABR (§4) means one title exists at many bitrates, so a poorly-normalized cache key **fragments** your hit ratio across renditions nobody requested; and a viral title expiring simultaneously across hundreds of PoPs is the textbook stampede that **origin shield + request collapsing** exists to absorb (see [cdn-edge](../cdn-edge/) §6).
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **geo-IP edge CDN reverse proxy** + **HTTP Range** byte-serving + device-specific transforms / canary (Netflix).
+- **Layer:** L7 (HTTP byte-range, HTTP/2).
+- **How:** on Play, an L7 smart proxy checks location/ISP/health and returns an `.m3u8` manifest pointing to the nearest edge; the edge serves 2-second **byte-range** chunks natively without hitting origin.
+- **🧭 Recall:** *send the viewer to the nearest edge and serve just the byte-range they asked for.*

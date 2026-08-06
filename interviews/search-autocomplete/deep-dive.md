@@ -1052,3 +1052,36 @@ immutable snapshot + hot-swap for deploys — is the industry-standard shape for
 | Freshness SLO | Alert on **trie age** (end-to-end lag), not "is the job running" — a job can run and be stuck |
 | Fail soft | Stale/empty/degraded beats error/spinner; every dependency needs a return-something fallback |
 | CTR feedback loop | Click-through by position feeds ranking weights → optimize for picks, not raw frequency |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Typeahead:** in-memory **trie read-replica clusters** updated by **immutable snapshot swaps** — zero-downtime, no write locks, sub-20 ms.
+- **Twitter Search:** each **inverted-index shard keeps 2–3 read replicas**; query proxies steer to healthy/underutilized replicas.
+- **Mode:** batch/snapshot (trie) or async (index).
+- **Why here:** queries must be fast and lock-free; you replicate read-only structures widely and rebuild-then-swap instead of mutating live.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 9 & 11, Typeahead/Twitter Search) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** an edge/CDN cache for the most popular prefixes → the **Redis prefix → top-K cache** (§8) → the **trie held entirely in RAM** (§3) → the offline build pipeline (§5).
+- **Strategy:** **refresh-ahead end to end.** The trie is itself a precomputed cache: top-K completions are materialized *at each node* (§4) so a keystroke costs a tree walk instead of a ranking computation. Redis fronts it to absorb the head of the distribution, and the whole structure is built offline by the Kafka/Flink pipeline rather than updated in place.
+- **Invalidation:** **hot-swap versioning (§6)** — build a new immutable trie, then atomically flip a pointer. Invalidation is a *pointer swap*, not a purge, which is the versioned-key pattern applied to an entire data structure. The Redis layer uses a short TTL plus explicit eviction when a **takedown** lands (§9), because a removed suggestion must disappear immediately and cannot wait out a TTL.
+- **Why here:** a sub-20 ms p99 on **every keystroke** means every layer has to be RAM — there is no budget for a disk seek anywhere in the path. The property that makes this affordable is **Zipf-distributed traffic**: roughly 1% of prefixes serve the large majority of requests, so a small cache buys an enormous hit ratio, and the marginal value of caching the long tail is close to zero. Two failure modes to name: a **version swap during peak** briefly doubles memory (both tries resident) and cold-starts the prefix cache, so swaps should be scheduled and drained (§10); and a **takedown-triggered eviction** of a very hot prefix is a genuine stampede risk (§8) — single-flight the refill rather than letting every in-flight keystroke rebuild it.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Typeahead:** edge **API gateway** terminates **HTTP/3 (QUIC)** near the user; inspects the prefix (`q=sys`) and routes via **consistent hashing** to the in-memory Trie shard.
+- **Twitter Search:** an L7 **scatter-gather** proxy fans a query across hundreds of inverted-index shards and **merges** the ranked lists.
+- **Layer:** L7 (HTTP/3, HTTP/TCP).
+- **🧭 Recall:** *terminate near the user + prefix-route to the Trie shard; scatter-gather for search.*

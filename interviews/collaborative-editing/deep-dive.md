@@ -331,3 +331,24 @@ FRONTEND
   virtualized canvas grid (viewport only); WASM calc for deterministic instant feedback
   offline = keep editing + buffer + batched-OT merge on reconnect; never drop work
 ```
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **a single-writer session server per document** — effectively a leader elected per document (§6) — plus a replicated **op log** and immutable snapshots in durable storage. CRDT-based designs (§3) can legitimately go multi-leader; OT-based designs cannot.
+- **Mode:** the op log is persisted **synchronously before the keystroke is acknowledged**; snapshots are written asynchronously. A lost acknowledged edit is directly user-visible — the character appeared and then vanished — so RPO = 0 on the log.
+- **Why here:** the crucial insight is that **the OT-vs-CRDT choice *is* a replication-layout choice**, not merely an algorithm preference. **OT requires a single serialization point** to define a total order on operations, which forces single-leader and makes that leader a per-document SPOF you must fail over carefully. **CRDTs merge without any ordering authority**, which is exactly what makes multi-leader and offline editing safe — that's the real reason to pay their metadata overhead, and saying so reframes §3 from a data-structure debate into an availability one. The failure mode to name (§9): failover must **carry the revision counter across**, or reconnecting clients replay their pending operations against the wrong base state and the document diverges — the one outcome the entire design exists to prevent. Note the asymmetry with a normal database failover: here you're not just recovering data, you're recovering a *position in a sequence*.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, memoized DAG cells) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** the client's local document replica → the session server's **in-RAM authoritative document** → immutable **snapshots** in blob/KV storage → the op log.
+- **Strategy:** **read-through snapshot + log tail** — loading a document fetches the latest snapshot and replays the ops committed since it. The calculation engine (§5) memoizes computed cell values keyed by the dependency DAG. Snapshots are written **refresh-ahead** by a background compaction of the op log, so open time doesn't degrade as a document ages.
+- **Invalidation:** snapshots are **immutable and revision-numbered** — never invalidated, only superseded, so the versioned-key pattern applies cleanly. Memoized cells must invalidate **transitively**: changing one precedent dirties every dependent cell downstream, which is cache invalidation with a correctness proof attached rather than a TTL.
+- **Why here:** the important distinction is what is **not** a cache. The session server's in-memory document looks like one but is the **serialization point** — the thing that gives operations a total order (§6). Serving a stale copy of it wouldn't be stale data, it would be a *divergent document*, which is the one failure this whole design exists to prevent. So: snapshots, presence/awareness state, and memoized formula results are cacheable; the current revision counter is not. Failover must carry that counter across, or reconnecting clients replay ops against the wrong base state (§9).

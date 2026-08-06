@@ -1280,3 +1280,35 @@ alerts:
 | Offline queue | Redis list per user; drain on reconnect |
 | Heartbeat | Ping/pong every 30s; no response = dead connection |
 | Reconnect sync | Client sends last_message_id; server returns delta |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern (FB Messenger):** leaderless **quorum** replication across datacenters — N=3, W=2, R=2 — plus redundant connection gateways with fast failover.
+- **Mode:** configurable quorum (W+R>N).
+- **Why here:** a delivered message must never be lost, and writes must stay available even if a DC is partitioned; quorum trades a little latency for that durability + availability.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 5, FB Messenger) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** client-local history store (SQLite/IndexedDB) → Redis for the **recent-message window**, **presence**, **unread counts**, and the session→gateway routing table → the durable message store.
+- **Strategy:** **write-through for the recent window** — when a message is sent, it's appended to the cached conversation list in the same operation that persists it. Older history is **cache-aside** from the message store. Presence is cache-only and never persisted.
+- **Invalidation:** presence rides a **TTL refreshed by heartbeat** (~30–60 s), so a client that dies silently simply expires — no cleanup job required. Unread counters are incremented in place and periodically **reconciled** from the store, because a drifted counter is a cosmetic bug while a recomputation per read would be prohibitive.
+- **Why here:** chat is the clearest **read-your-own-write** case in this repo — a sender who doesn't instantly see their own message believes the app is broken. That single requirement rules out write-around and forces the sender's write *through* the cache. Contrast with presence, which is 100% disposable: losing the whole presence cache shows everyone as offline for one heartbeat interval and then self-heals, so it deliberately gets no durability at all. The routing table is the third kind — a **stale** entry is worse than a missing one, because it delivers to a gateway that no longer holds the connection.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **stateful connection proxy** (Wangle/Proxygen) holding **millions of persistent WebSocket/MQTT sockets** with **connection multiplexing** + **session pinning**.
+- **Layer:** L4 for the raw socket / L7 for message routing.
+- **How:** each incoming message is routed to the **specific node holding the recipient's live session** (sticky routing) — not broadcast.
+- **🧭 Recall:** *keep the socket open and always route to the box that holds that user's session.*

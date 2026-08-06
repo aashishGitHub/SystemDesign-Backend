@@ -2,7 +2,7 @@
 
 > Attempt each question cold before reading [answers.md](./answers.md).
 > Work level-by-level; later levels assume earlier concepts.
-> This is an **umbrella topic** — it reuses depth from neighbours instead of duplicating it: [kv-store](../kv-store/) (cart/Dynamo), [seat-reservation](../seat-reservation/) (no-oversell, flash sale), [distributed-transactions](../distributed-transactions/) (order saga, idempotency, payments), [message-queues](../message-queues/) (outbox), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery). A dedicated **payment-system** deep-dive is its own topic (ROADMAP Problem 16, not yet built).
+> This is an **umbrella topic** — it reuses depth from neighbours instead of duplicating it: [kv-store](../kv-store/) (cart/Dynamo), [seat-reservation](../seat-reservation/) (no-oversell, flash sale), [distributed-transactions](../distributed-transactions/) (order saga, idempotency, payments), [message-queues](../message-queues/) (outbox), [distributed-caching](../distributed-caching/) / [cdn-edge](../cdn-edge/) (catalog reads), [search-autocomplete](../search-autocomplete/) / [recommendation-system](../recommendation-system/) (discovery). A dedicated [payment-system](../payment-system/) topic owns the money-correctness depth (ledger, idempotency, reconciliation, chargebacks).
 
 ---
 
@@ -101,7 +101,7 @@
 
 **Q31.** How do you shard the products and orders data? How do you handle a hot product (a viral item) or a hot customer? (reuse [sharding-replication](../sharding-replication/), [consistent-hashing](../consistent-hashing/))
 
-**Q32.** Returns, refunds, and chargebacks: how must the order and payment data be modeled to support them cleanly? (reuse [distributed-transactions](../distributed-transactions/); deeper ledger design → payment-system)
+**Q32.** Returns, refunds, and chargebacks: how must the order and payment data be modeled to support them cleanly? (reuse [distributed-transactions](../distributed-transactions/); deeper ledger design → [payment-system](../payment-system/))
 
 ---
 

@@ -815,3 +815,24 @@ export function useProjects() {
 Total time from Bob clicking → Alice seeing the new project: < 500ms
 Old polling approach: up to 30 seconds
 ```
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** stateless SSE handlers behind a load balancer, with the **fan-out** replicated via NATS (Q6) so **any pod can serve any subscriber**. Connection state itself is deliberately **not** replicated — there is no standby holding a warm copy of an open stream.
+- **Mode:** **asynchronous, at-most-once fan-out** — explicitly fire-and-forget (Q7). No pod waits for another to acknowledge an event.
+- **Why here:** the honest framing is that this design **does not replicate connection state at all** — it makes connections **cheap to re-establish** instead, which is a legitimate and often better answer than replicating them. That's only acceptable because of two things working together: **`Last-Event-ID` plus a bounded replay buffer** turns a dropped connection into a resumable gap rather than lost data (see the 🗄️ section above), and NATS decouples publishers from any particular pod so a reconnect can land anywhere. Remove either and "we don't replicate" becomes "we drop events." This is also exactly why **graceful shutdown (Q9) is load-bearing** rather than hygiene: a pod termination drops every stream it owns, so a rolling deploy without drain-and-notify produces a synchronized reconnect stampede from every client at once — the failure mode to raise unprompted, and the argument for staggered rollouts plus jittered client reconnect backoff. Contrast with [chat-system](../chat-system/), where session state *is* replicated because a dropped message is unacceptable; here the event stream is a live view that can be rebuilt from its source, which is what licenses the cheaper design.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** essentially none on the data path — and here the interesting content is about **defeating** caches rather than adding them. The stream must be sent with `Cache-Control: no-cache` (plus `X-Accel-Buffering: no` for nginx and the equivalent for whatever proxy sits in front), because **a buffering intermediary is a cache that breaks the entire feature**: it holds events until its buffer fills, converting a real-time stream into unpredictable batches.
+- **Strategy:** the broker's nested client map (Q4) is a **routing cache**, not a data cache — it maps user/topic → live connections so a published event finds its subscribers without a lookup. The one genuine cache is the reconnect path: a **bounded per-topic replay buffer** keyed by event ID, so a client returning with `Last-Event-ID` gets what it missed instead of a gap.
+- **Invalidation:** the replay buffer is bounded by size or time (evict oldest, accept that a client offline longer than the window must do a full refetch). The important non-cache: **RBAC is re-checked per event (Q5), deliberately not cached at connection time** — permissions can be revoked mid-stream, and a long-lived connection would otherwise keep delivering data the user is no longer entitled to.
+- **Why here:** the reason to write this section for a topic with almost no caching is that the *absence* is the design decision. Two points to be able to make: **an authorized, per-subscriber event payload must never be served from a shared cache** — the whole class of "cached an authenticated response" bugs (see [api-design](../api-design/)) applies with the highest possible severity here, since events are individually authorized. And the connection map's disposability is what makes Q9's graceful shutdown the right answer: because nothing valuable is cached in a pod, a rolling deploy only needs to let clients **reconnect** cheaply rather than replicate any state — with `Last-Event-ID` plus the replay buffer converting "we replicate nothing" into an acceptable delivery guarantee.

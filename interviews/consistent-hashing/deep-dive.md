@@ -44,23 +44,22 @@ Consistent hashing is the scheduling system where adding one agent only reassign
 
 ### 🟡 Senior — The Math of Mass Remapping
 
-```python
-# Modulo hashing: which node owns this key?
-def modulo_node(key: str, num_nodes: int) -> int:
-    return hash(key) % num_nodes
+The root cause is that **the node count is inside the formula.** The key's hash never changes — but the divisor does, so the answer changes with it:
 
-# With 4 nodes:
-# hash("user:42") = 15234567 → 15234567 % 4 = 3 → Node3
-# hash("item:99") = 28931042 → 28931042 % 4 = 2 → Node2
+```mermaid
+flowchart LR
+    H["hash('user:42')<br/>= 15234567<br/><i>never changes</i>"] --> M{"% N<br/><b>N is part of<br/>the formula</b>"}
+    M -->|"N = 4"| B4["bucket 3<br/>Node3"]
+    M -->|"N = 5"| B5["bucket 2<br/>Node2"]
+    B4 -.->|"the key didn't move —<br/>its OWNER did"| B5
 
-# Add a 5th node:
-# hash("user:42") % 5 = 2 → Node2  (MOVED!)
-# hash("item:99") % 5 = 2 → Node2  (same by coincidence)
-
-# Expected fraction of keys that change nodes going from N to N+1:
-# P(hash(key) % N == hash(key) % (N+1)) ≈ 1/(N+1)
-# So fraction that must move ≈ N/(N+1)
+    style H fill:#dbeafe,stroke:#1d4ed8
+    style M fill:#fee2e2,stroke:#dc2626
+    style B4 fill:#dcfce7,stroke:#16a34a
+    style B5 fill:#fed7aa,stroke:#ea580c
 ```
+
+A key keeps its owner only in the rare case that `hash % N` and `hash % (N+1)` happen to agree — probability ≈ `1/(N+1)`. So the fraction that **must** move is ≈ `N/(N+1)`:
 
 | Cluster Size Change | Keys That Must Move |
 |---|---|
@@ -107,43 +106,44 @@ A new waiter joins and takes a section between seats 45 and 90. Only customers i
 
 ---
 
-### 🟡 Senior — Ring Mechanics in Code
+### 🟡 Senior — Ring Mechanics
 
-```python
-import hashlib
-import bisect
+**The whole data structure is one sorted list of numbers.** Node positions are hashed onto the ring and kept in sorted order; a lookup is a binary search for the next position clockwise, wrapping at the top.
 
-class ConsistentHashRing:
-    def __init__(self):
-        self.ring = {}       # position → node_id
-        self.sorted_keys = [] # sorted list of positions
+```mermaid
+flowchart LR
+    K["key 'user:42'"] --> H["hash it → 150<br/><i>same hash function<br/>as the nodes</i>"]
+    H --> BS["binary search the sorted<br/>node positions for the<br/>first position &gt; 150<br/><i>O(log n)</i>"]
+    BS --> W{"ran off<br/>the end?"}
+    W -->|"no"| OWN["that position's<br/>node owns the key"]
+    W -->|"yes → wrap<br/>to index 0"| OWN
+    OWN --> R["→ NodeB"]
 
-    def add_node(self, node_id: str):
-        position = self._hash(node_id)
-        self.ring[position] = node_id
-        bisect.insort(self.sorted_keys, position)
-
-    def get_node(self, key: str) -> str:
-        if not self.ring:
-            raise Exception("Ring is empty")
-        position = self._hash(key)
-        # Find first node at or clockwise from position
-        idx = bisect.bisect_right(self.sorted_keys, position) % len(self.sorted_keys)
-        return self.ring[self.sorted_keys[idx]]
-
-    def _hash(self, key: str) -> int:
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
-
-# Usage:
-ring = ConsistentHashRing()
-for node in ["NodeA", "NodeB", "NodeC"]:
-    ring.add_node(node)
-
-print(ring.get_node("user:42"))   # → e.g., "NodeB"
-print(ring.get_node("item:99"))   # → e.g., "NodeC"
+    style K fill:#e0e7ff,stroke:#4338ca
+    style BS fill:#fef9c3,stroke:#ca8a04
+    style W fill:#fef9c3,stroke:#ca8a04
+    style R fill:#dcfce7,stroke:#16a34a
 ```
 
-When a 4th node is added, only keys between the new node's clockwise predecessor and the new position move — roughly 1/4 of total keys.
+The wrap is the only special case, and it's why the space is a **ring**: without it, keys hashing above the highest node position would have no owner.
+
+Three nodes on the ring, one position each, and the arcs they own:
+
+```mermaid
+flowchart LR
+    A(("NodeA<br/>pos 10")) -->|"owns arc 231 → 359 → 0 → 10<br/><i>this arc wraps through zero</i>"| A
+    A -->|"arc 11 → 120"| B(("NodeB<br/>pos 120"))
+    B -->|"arc 121 → 230"| C(("NodeC<br/>pos 230"))
+    C -->|"clockwise, back to A"| A
+
+    style A fill:#dbeafe,stroke:#1d4ed8
+    style B fill:#dcfce7,stroke:#16a34a
+    style C fill:#fed7aa,stroke:#ea580c
+```
+
+Each node owns the arc that **ends** at its own position. Note what that means with real hash values: measured over 30,000 keys on three nodes placed once each, the split came out **29,176 / 685 / 139** — one node holding 97% of the keyspace. That isn't a bug, it's three random points on a circle, and it's the entire motivation for virtual nodes below.
+
+Adding a 4th node moves only the keys between the new position and its clockwise predecessor — roughly `1/4` of the total.
 
 ---
 
@@ -174,27 +174,39 @@ Virtual nodes mean each waiter gets 50 small sections scattered around the table
 
 ---
 
-### 🟡 Senior — Vnode Implementation and Distribution
+### 🟡 Senior — How Vnodes Change the Picture
 
-```python
-class VNodeRing:
-    def __init__(self, vnodes_per_node: int = 150):
-        self.vnodes_per_node = vnodes_per_node
-        self.ring = {}
-        self.sorted_keys = []
+**One physical node claims many ring positions.** You hash a *derived* name — `NodeA:vnode:0`, `NodeA:vnode:1`, … — but every one of those positions maps back to the same physical machine:
 
-    def add_node(self, node_id: str):
-        for i in range(self.vnodes_per_node):
-            vnode_key = f"{node_id}:vnode:{i}"
-            position = self._hash(vnode_key)
-            self.ring[position] = node_id
-            bisect.insort(self.sorted_keys, position)
+```mermaid
+flowchart LR
+    PA(["NodeA<br/><i>one machine</i>"]) --> VA1["NodeA:vnode:0<br/>→ pos 14"]
+    PA --> VA2["NodeA:vnode:1<br/>→ pos 203"]
+    PA --> VA3["NodeA:vnode:2<br/>→ pos 91"]
+    VA1 --> RING[["Sorted ring positions<br/>14 · 22 · 47 · 91 · 118 · 203 · 250 · …<br/><i>A and B and C interleaved everywhere</i>"]]
+    VA2 --> RING
+    VA3 --> RING
+    PB(["NodeB"]) -->|"its own 150 positions"| RING
+    PC(["NodeC"]) -->|"its own 150 positions"| RING
+    RING --> LOOK["Lookup is UNCHANGED —<br/>binary search, next position clockwise.<br/><b>It never knows vnodes exist.</b>"]
 
-    def get_node(self, key: str) -> str:
-        position = self._hash(key)
-        idx = bisect.bisect_right(self.sorted_keys, position) % len(self.sorted_keys)
-        return self.ring[self.sorted_keys[idx]]
+    style PA fill:#dbeafe,stroke:#1d4ed8
+    style PB fill:#dcfce7,stroke:#16a34a
+    style PC fill:#fed7aa,stroke:#ea580c
+    style RING fill:#fef9c3,stroke:#ca8a04
+    style LOOK fill:#e0e7ff,stroke:#4338ca
 ```
+
+Two consequences fall straight out of that interleaving:
+
+| | |
+|---|---|
+| **Balance** | Many small arcs per node average out, instead of three giant arcs decided by luck |
+| **Failure spreading** | When a node dies, its ~150 arcs each hand off to a *different* neighbour — not all to one successor |
+
+The second one matters more than the first and gets forgotten more often. With one position per node, a death dumps the entire share onto a single successor, which then falls over too.
+
+Measured on the same 30,000 keys and 3 nodes, now with 150 vnodes each: **11,533 / 10,038 / 8,429**. Far better than 97/2/1 — but still ±15% off ideal, which is exactly why "does 256 vnodes *guarantee* even distribution?" is **no**. More vnodes tightens the spread; nothing flattens it.
 
 Distribution quality vs vnode count (simulation over 1M keys, 6 nodes):
 
@@ -381,30 +393,32 @@ Important documents are never stored in one filing cabinet — they're in three 
 
 ### 🟡 Senior — Preference List Construction
 
-```python
-def get_preference_list(key: str, ring: VNodeRing, replication_factor: int) -> list:
-    """Returns N distinct physical nodes in clockwise order from key's position."""
-    position = ring._hash(key)
-    preference_list = []
-    seen_physical_nodes = set()
+**Walk clockwise from the key and collect the next `N` distinct *physical* nodes.** The word "distinct" is the entire subtlety — consecutive ring positions often belong to the same machine:
 
-    # Walk clockwise from key's position
-    idx = bisect.bisect_right(ring.sorted_keys, position) % len(ring.sorted_keys)
-    while len(preference_list) < replication_factor:
-        ring_pos = ring.sorted_keys[idx % len(ring.sorted_keys)]
-        physical_node = ring.ring[ring_pos]
-        if physical_node not in seen_physical_nodes:
-            preference_list.append(physical_node)
-            seen_physical_nodes.add(physical_node)
-        idx += 1
+```mermaid
+flowchart LR
+    K["key 'user:42'<br/>pos 150"] --> P1["pos 161<br/><b>NodeC</b>"]
+    P1 -->|"new ✓<br/><b>[C]</b>"| P2["pos 168<br/><b>NodeC</b><br/><i>another C vnode</i>"]
+    P2 -->|"dupe ✗ skip"| P3["pos 174<br/><b>NodeB</b>"]
+    P3 -->|"new ✓<br/><b>[C, B]</b>"| P4["pos 181<br/><b>NodeC</b>"]
+    P4 -->|"dupe ✗ skip"| P5["pos 195<br/><b>NodeA</b>"]
+    P5 -->|"new ✓<br/><b>[C, B, A]</b>"| DONE["RF=3 satisfied<br/>stop walking"]
 
-    return preference_list
-
-# Example: key "user:42", RF=3
-# preference_list(key) → [NodeC, NodeA, NodeD]
-# NodeC: primary (coordinator writes here first)
-# NodeA, NodeD: replicas
+    style K fill:#e0e7ff,stroke:#4338ca
+    style P2 fill:#fee2e2,stroke:#dc2626
+    style P4 fill:#fee2e2,stroke:#dc2626
+    style DONE fill:#dcfce7,stroke:#16a34a
 ```
+
+The result — `[NodeC, NodeB, NodeA]` — has **NodeC as the primary** (the coordinator writes there first); B and A are the replicas.
+
+Skip the de-duplication and the bug is silent and severe: a key whose next three positions are all vnodes of one machine reports `RF=3` while sitting on **one** box with zero real redundancy. Two related guards worth naming in a review:
+
+| Guard | Why |
+|---|---|
+| Skip repeat **physical** nodes | Otherwise RF is a lie (above) |
+| Fail if `RF > distinct node count` | The clockwise walk can never satisfy itself — it spins forever instead of erroring |
+| Prefer distinct **failure domains** | Three replicas in one rack/AZ satisfy RF=3 on paper and protect against nothing |
 
 **Why skip vnodes from the same physical node?** If NodeA has 256 vnodes, the next 5 clockwise positions might all belong to NodeA. If we included them all, "replication factor 3" would mean 3 copies on 1 physical machine — useless for fault tolerance.
 
@@ -447,32 +461,49 @@ This is sloppy quorum: a substitute node handles writes while the original is do
 
 ### 🟡 Senior — Hinted Handoff in Practice
 
-```python
-class CoordinatorNode:
-    def write(self, key: str, value: str, consistency: str = "QUORUM"):
-        preference_list = ring.get_preference_list(key, replication_factor=3)
-        successful_writes = 0
-        hints = []
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CL as Client
+    participant CO as Coordinator
+    participant A as NodeA (replica 1)
+    participant B as NodeB (replica 2)
+    participant C as NodeC (replica 3 — DOWN)
+    participant S as NodeS (substitute,<br/>NOT in preference list)
 
-        for node in preference_list:
-            try:
-                node.write(key, value, timeout_ms=200)
-                successful_writes += 1
-            except NodeUnavailableError:
-                # Sloppy quorum: find a substitute node not in preference list
-                substitute = ring.get_available_node_excluding(preference_list)
-                substitute.write_with_hint(key, value, hint={
-                    "intended_node": node.id,
-                    "written_at": time.now()
-                })
-                hints.append((substitute, node.id))
-                successful_writes += 1  # count this toward quorum
+    CL->>CO: write(key, value)
+    Note over CO: preference list = [A, B, C], W=2 needed
 
-        if successful_writes < required_writes(consistency):
-            raise QuorumNotMetError()
+    CO->>A: write
+    A-->>CO: ack (1)
+    CO->>B: write
+    B-->>CO: ack (2)
+    CO->>C: write
+    C--xCO: timeout / unreachable
 
-        return "OK"
+    Note over CO,S: Sloppy quorum: don't fail — park it elsewhere
+    CO->>S: writeWithHint(key, value,<br/>hint = "this belongs to NodeC")
+    S-->>CO: ack (counted toward W!)
+    CO-->>CL: 200 OK
+
+    Note over S: NodeS stores the value in a<br/>LOCAL HINT AREA — it is not a<br/>replica and will never serve reads for it
+
+    C->>C: recovers
+    S->>C: hand off the hinted value
+    C-->>S: ack
+    Note over S: delete the hint
 ```
+
+The consequential step is **9** — the substitute's ack counts toward `W`. That's what buys write availability while a replica is down, and it's also exactly why a sloppy quorum is **not** a real quorum: `W + R > N` no longer implies read/write overlap, because one of those `W` writes is sitting on a node no reader will ever consult.
+
+| | Strict quorum | Sloppy quorum |
+|---|---|---|
+| Replica down | Write **fails** | Write **succeeds** (hinted elsewhere) |
+| `W + R > N` guarantees overlap | Yes | **No** |
+| Reader can see the hinted write | n/a | Not until handoff completes |
+| Durability window | — | Hint lost if the substitute dies before handoff |
+
+The last row is the one candidates miss: a hint is stored on **one** node. If NodeS dies before NodeC recovers, that write is simply gone, despite the client having received a `200 OK`.
 
 When the original node recovers:
 ```
@@ -650,27 +681,48 @@ Gossip protocol works the same way. Each node periodically sends its view of the
 
 ### 🟡 Senior — Gossip Mechanics
 
-```python
-class GossipNode:
-    def gossip_round(self):
-        # Select k random peers (typically 3)
-        peers = random.sample(self.all_known_nodes, k=3)
+Every node keeps its own table of "what I believe about everyone." Once per second it bumps its own counter and swaps tables with ~3 random peers:
 
-        for peer in peers:
-            # Exchange cluster state (heartbeat vectors)
-            their_state = peer.exchange_state(self.local_state)
+```mermaid
+flowchart LR
+    T["bump MY OWN<br/>heartbeat<br/>A: 47 → 48"] --> PICK["pick ~3<br/>random peers"]
+    PICK --> EX["swap belief<br/>tables"]
+    EX --> MERGE{"per node in their table:<br/>is their heartbeat<br/>higher than mine?"}
+    MERGE -->|"yes → adopt theirs"| UPD["update<br/>my table"]
+    MERGE -->|"node I've<br/>never seen<br/>→ adopt"| UPD
+    MERGE -->|"no → keep mine"| KEEP["ignore"]
+    UPD -.->|"1s later, repeat<br/><i>Cassandra's default interval</i>"| T
 
-            # Merge: for each node, keep the more recent state
-            for node_id, state in their_state.items():
-                if state.heartbeat > self.local_state[node_id].heartbeat:
-                    self.local_state[node_id] = state
-
-    def heartbeat_loop(self):
-        while True:
-            self.local_state[self.node_id].heartbeat += 1
-            self.gossip_round()
-            time.sleep(1)  # 1 second gossip interval (Cassandra default)
+    style T fill:#dbeafe,stroke:#1d4ed8
+    style MERGE fill:#fef9c3,stroke:#ca8a04
+    style UPD fill:#dcfce7,stroke:#16a34a
 ```
+
+**The merge rule is the entire protocol: higher heartbeat wins, applied per node.** Because "take the max" is commutative and idempotent, the exchange converges no matter who talks to whom, in what order, or how many messages are lost or duplicated. No coordinator, no election, no consensus round.
+
+Worked example of a node's belief table converging:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as NodeA
+    participant B as NodeB
+    participant C as NodeC
+
+    Note over A: believes {A:48, B:31, C:12}
+    Note over B: believes {A:44, B:32, C:19}
+
+    A->>B: my table {A:48, B:31, C:12}
+    B->>A: my table {A:44, B:32, C:19}
+    Note over A: merge by max →<br/>{A:48, B:32, C:19}
+    Note over B: merge by max →<br/>{A:48, B:32, C:19}
+    Note over A,B: both now hold the SAME view —<br/>without ever agreeing on an order
+
+    Note over C: C has crashed. Nobody bumps C's counter.
+    A->>A: C:19 stops advancing → after a<br/>threshold, mark C suspect, then dead
+```
+
+Note the failure detection falls out for free: nobody can bump C's counter except C, so a **stale** counter is the signal. That's why the mechanism is a heartbeat *number* rather than a boolean "alive" flag — a boolean would need someone authoritative to flip it.
 
 Convergence properties:
 ```
@@ -788,24 +840,31 @@ It is essentially consistent hashing without the ring data structure — a mathe
 
 ### 🟡 Senior — Algorithm and Properties
 
-```python
-def jump_consistent_hash(key: int, num_buckets: int) -> int:
-    """
-    Maps key to bucket in [0, num_buckets).
-    Adding one bucket only reassigns keys going to the new bucket.
-    From: Lamping & Veach, "A Fast, Minimal Memory, Consistent Hash Algorithm" (Google, 2014)
-    """
-    b, j = -1, 0
-    while j < num_buckets:
-        b = j
-        key = ((key * 2862933555777941757) + 1) & 0xFFFFFFFFFFFFFFFF
-        j = int((b + 1) * (1 << 31) / ((key >> 33) + 1))
-    return b
+Instead of storing a ring, jump hash **replays** the key's history of moves. Ask "as the cluster grew from 1 bucket to N, at which sizes would this key have jumped?" — the key's own hash seeds a deterministic random sequence, so every node computes the same answer from nothing but `(key, N)`:
 
-# Usage:
-print(jump_consistent_hash(hash("user:42"), 5))  # → e.g., 3
-print(jump_consistent_hash(hash("user:42"), 6))  # → 3 (same) or 5 (moved to new bucket)
+```mermaid
+flowchart LR
+    START["key 42<br/>bucket b = 0<br/><i>with 1 bucket, everything is in bucket 0</i>"] --> D1{"cluster grows.<br/>does this key jump<br/>to the new bucket?<br/><i>decided by the key's<br/>own hash sequence</i>"}
+    D1 -->|"no — stay put<br/>(probability b/(b+1))"| D1
+    D1 -->|"yes — jump"| J["b = the new bucket index"]
+    J --> D2{"still below<br/>numBuckets?"}
+    D2 -->|"yes, keep replaying"| D1
+    D2 -->|"no — we've passed N"| OUT["return b<br/><i>the last bucket it jumped to<br/>while still inside the cluster</i>"]
+
+    style START fill:#dbeafe,stroke:#1d4ed8
+    style D1 fill:#fef9c3,stroke:#ca8a04
+    style D2 fill:#fef9c3,stroke:#ca8a04
+    style OUT fill:#dcfce7,stroke:#16a34a
 ```
+
+Two properties fall out of that shape, and they're the reason it exists:
+
+- **O(1) space.** There is no ring, no vnode table, no membership list — just `(key, numBuckets)` in, bucket out. Nothing to replicate, nothing to keep in sync, nothing to go stale.
+- **Minimal movement, by construction.** Growing the cluster only ever adds *new* jump opportunities. A key can move **onto** the new bucket, but two existing buckets can never swap keys.
+
+Verified on 100K keys: 10 buckets each received ~10,000 keys; going 10 → 11 moved **9.04%** (ideal `1/11` = 9.09%), with **zero** keys shuffled between pre-existing buckets.
+
+> **If you do implement it:** the real algorithm (Lamping & Veach, *"A Fast, Minimal Memory, Consistent Hash Algorithm"*, Google, 2014) drives those jump decisions with a 64-bit linear congruential generator and **depends on 64-bit integer overflow**. In a language whose default number type is a double — JavaScript, Lua — you must use an explicit 64-bit integer type (`BigInt`) or the multiplication silently loses precision above 2⁵³ and the distribution skews.
 
 | Property | Ring Consistent Hashing | Jump Consistent Hash |
 |---|---|---|
@@ -852,35 +911,54 @@ The key count (exhibits) is balanced. The access count (visitors) is not. These 
 
 ### 🟡 Senior — Hot Key Mitigation Strategies
 
-```python
-# Strategy 1: Key splitting
-# Instead of storing all of "celebrity_user:1" on one node,
-# split the read load across N shards.
+**Strategy 1 — key splitting.** One hot key becomes N differently-named keys, which the ring then scatters across N nodes. The asymmetry between the read and write path *is* the technique:
 
-def get_user_shard_key(user_id: int, shard_count: int = 10) -> str:
-    shard = random.randint(0, shard_count - 1)  # for writes: random shard
-    return f"user:{user_id}:shard:{shard}"
+```mermaid
+flowchart LR
+    WR(["write<br/>user:42"]) ==>|"fan out to<br/>ALL 10 shards"| S0["user:42:shard:0"]
+    WR ==> S1["user:42:shard:1"]
+    WR ==> S9["user:42:shard:9<br/><i>…and the rest</i>"]
 
-def read_user(user_id: int, shard_count: int = 10) -> str:
-    shard = random.randint(0, shard_count - 1)  # for reads: random shard
-    key = f"user:{user_id}:shard:{shard}"
-    return cache.get(key)
+    S0 --> NA[("NodeA")]
+    S1 --> ND[("NodeD")]
+    S9 --> NF[("NodeF")]
 
-# On write: fan-out to all shards
-def write_user(user_id: int, value: str, shard_count: int = 10):
-    for shard in range(shard_count):
-        key = f"user:{user_id}:shard:{shard}"
-        cache.set(key, value)
+    RD(["read<br/>user:42"]) -.->|"pick just ONE,<br/>at random"| S1
+
+    style WR fill:#fed7aa,stroke:#ea580c
+    style RD fill:#dcfce7,stroke:#16a34a
+    style S0 fill:#e0e7ff,stroke:#4338ca
+    style S1 fill:#e0e7ff,stroke:#4338ca
+    style S9 fill:#e0e7ff,stroke:#4338ca
+    style NA fill:#dbeafe,stroke:#1d4ed8
+    style ND fill:#dbeafe,stroke:#1d4ed8
+    style NF fill:#dbeafe,stroke:#1d4ed8
 ```
 
-```python
-# Strategy 2: Local L1 cache on API servers
-from functools import lru_cache
+One key became ten keys, and because the ten names hash differently the ring scatters them onto **different nodes** — that's where the read spread comes from.
 
-@lru_cache(maxsize=1000, ttl=5)  # 5-second TTL for hot keys
-def get_hot_user(user_id: int) -> dict:
-    return cache_cluster.get(f"user:{user_id}")
+Get that backwards — write to *one random* shard — and you leave 9 stale copies while reads return whichever they happen to land on. The trade is **10× write amplification for a 10× read spread**, so it's only worth it for genuinely hot keys, and the copies are briefly inconsistent with each other for the duration of the fan-out.
+
+**Strategy 2 — a tiny L1 cache in each API server's own memory.** The cheapest hot-key fix available, and it needs no ring change at all:
+
+```mermaid
+flowchart LR
+    REQ(["request for<br/>user:42"]) --> L1{"in my own memory<br/>AND not expired?"}
+    L1 -->|"hit — ~99.99% of the time"| SERVE["serve locally<br/><i>zero network</i>"]
+    L1 -->|"miss or expired"| FETCH["fetch from cache cluster"]
+    FETCH --> STORE["store with<br/>expiresAt = now + 5s"]
+    STORE --> SERVE
+
+    style L1 fill:#fef9c3,stroke:#ca8a04
+    style SERVE fill:#dcfce7,stroke:#16a34a
+    style FETCH fill:#fee2e2,stroke:#dc2626
 ```
+
+The arithmetic is what sells it: **100 API servers × one fetch per 5 s = 20 req/s** to the cluster for that key, no matter how hot it gets. Measured on the implementation, 100 rapid calls collapsed to exactly **1** cluster fetch, and 2 after the TTL elapsed.
+
+The costs are worth stating plainly: **staleness bounded by the TTL**, and because the copy is per-server there is **no invalidation path** — you wait out the 5 seconds. Also cap the map, or a long tail of distinct keys turns your "small" L1 into a memory leak.
+
+> ⚠️ If you've seen this idea written in Python: `functools.lru_cache` has **no** `ttl` parameter — `@lru_cache(maxsize=1000, ttl=5)` raises `TypeError`. You need `cachetools.TTLCache` (third-party) or a hand-rolled wrapper. Verify any cache decorator's real signature before citing it in an interview.
 
 | Strategy | Write Cost | Read Distribution | Staleness |
 |---|---|---|---|
@@ -1158,22 +1236,21 @@ Rebalancing: explicit slot migration commands
 
 Before Cassandra and DynamoDB, the standard way to consistently hash a cache cluster was **ketama** (originally written at Last.fm in 2007):
 
-```python
-# ketama algorithm (simplified)
-# Each node gets 40 positions on the ring (1 physical node × 40 replications)
-# Uses MD5 hash
+```mermaid
+flowchart LR
+    N(["server<br/>'10.0.0.1:11211'"]) --> LOOP["for replica = 0 … 39"]
+    LOOP --> NAME["name it<br/>'10.0.0.1:11211:7'"]
+    NAME --> MD5["MD5 → 128-bit digest"]
+    MD5 --> TRUNC["take the FIRST 8 HEX CHARS<br/>= 32 bits only<br/><i>this truncation is the wire format</i>"]
+    TRUNC --> POS["→ one ring position"]
+    POS -.->|"× 40 per server"| RING[["the client's ring"]]
 
-def ketama_hash(key: str) -> int:
-    return int(hashlib.md5(key.encode()).hexdigest()[:8], 16)
-
-def build_ring(nodes: list) -> dict:
-    ring = {}
-    for node in nodes:
-        for replica in range(40):  # 40 virtual positions per node
-            vkey = f"{node}:{replica}"
-            ring[ketama_hash(vkey)] = node
-    return ring
+    style N fill:#dbeafe,stroke:#1d4ed8
+    style TRUNC fill:#fee2e2,stroke:#dc2626
+    style RING fill:#fef9c3,stroke:#ca8a04
 ```
+
+The red box is the part that matters operationally. Ketama uses only the **first 32 bits** of the MD5 digest, and every compatible client must reproduce that truncation exactly. Change the hash function, the number of digest bytes, the replica count, or even the string format of the vnode name, and **every key in the cluster relocates** — a full cache flush disguised as a client upgrade. That's why Memcached client libraries treat ketama as a frozen wire format rather than an implementation detail, and why mixing two client libraries with different ketama variants against one cluster quietly halves your hit rate.
 
 Ketama became the de facto standard for Memcached client-side consistent hashing. Libraries in every language implement it. This is why you'll see "libketama" as a dependency in many older cache clients.
 
@@ -1381,9 +1458,20 @@ Use case: user session store (stale reads are fine for 5 seconds)
 
 > Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) (rows 15–16 mechanism, Uber/Ringpop) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
 
-- **Pattern:** not a replication scheme — the **placement function replication is built on**. The **preference list** (§6) is produced by walking the ring clockwise from a key's position to the next `N` **distinct** nodes; those are its replicas. Membership is maintained by **gossip** (§10) rather than a master.
-- **Mode:** whatever the quorum configuration says — this layer is mode-agnostic, which is why §7's sloppy quorum and hinted handoff can trade consistency for write availability without changing the ring at all.
-- **Why here:** it answers the question every replication scheme must answer first: **"which `N` nodes hold this key?"** — and it answers it so that adding capacity moves only ~`K/N` of the data instead of remapping everything (§1). Two details that matter in a design review. **Virtual nodes exist for failure spreading, not just balance** (§3): without them a dead node's entire share lands on its single ring successor, which then falls over too — the textbook cascading failure; with vnodes that load spreads across many peers. And **"next `N` distinct nodes" must mean distinct *failure domains*, not just distinct processes** — three replicas that happen to sit in one rack or one AZ satisfy RF=3 on paper and give you none of its protection, which is the most common way a correct-looking ring configuration fails in production.
+**In one line:** consistent hashing isn't a replication scheme — it's the **placement function** replication is built on. It answers the question every replication scheme must answer first: *which `N` nodes hold this key?*
+
+| | |
+|---|---|
+| **Pattern** | Walk the ring clockwise from the key to the next `N` **distinct** nodes — that's the preference list (§6) |
+| **Membership** | Gossip (§10), not a master |
+| **Mode** | Whatever the quorum config says — this layer is mode-agnostic |
+
+That mode-agnosticism is why §7's sloppy quorum and hinted handoff can trade consistency for write availability **without changing the ring at all**.
+
+**Two details that decide a design review:**
+
+1. **Virtual nodes exist for failure spreading, not just balance** (§3). Without them, a dead node's entire share lands on its single ring successor — which then falls over too. That's the textbook cascading failure. With vnodes, the load spreads across many peers.
+2. **"Next `N` distinct nodes" must mean distinct *failure domains*.** Three replicas that happen to share a rack or an AZ satisfy RF=3 on paper and give you none of its protection. This is the most common way a correct-looking ring config fails in production.
 
 ---
 
@@ -1391,7 +1479,17 @@ Use case: user session store (stale reads are fine for 5 seconds)
 
 > Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, ring/membership cache) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
 
-- **Layers:** this topic isn't a cache — it's the **placement function a cache tier is built on**, plus one cache of its own: the client-side **ring/membership cache** that maps key → node without an extra network hop.
-- **Strategy:** the ring makes a **distributed cache resizable**. Under naive `hash(key) % N`, changing `N` remaps nearly every key at once — a full-fleet cache miss storm that lands entirely on your database. Consistent hashing moves only ~`K/N` keys (§1–§2), turning a capacity change from an outage into a blip. Hot keys (§13) are handled by replicating them to the next `R` nodes on the ring or by weighting vnodes.
-- **Invalidation:** a node's departure **implicitly invalidates** everything it held — no purge needed, the keys simply aren't found and get refilled. The membership cache is invalidated by **gossip (§10)** carrying a version epoch, so a stale ring is detected rather than silently misrouting.
-- **Why here:** this is the mechanism that makes Memcached/EVCache-style fleets operable — you can add capacity on a Friday afternoon. The failure mode worth naming: a **ring change during peak traffic** produces a miss burst precisely when the origin has the least headroom, so migrations (§8) should be **drained gradually** and, ideally, the new node should warm before taking full share. Note the asymmetry with data stores: when the ring moves under a *cache*, you lose speed; when it moves under a *database*, you lose the data unless it's re-replicated first.
+**In one line:** the ring is what makes a distributed cache **resizable** — it turns adding capacity from an outage into a blip.
+
+| | |
+|---|---|
+| **The problem** | `hash(key) % N`: change `N` and nearly every key remaps at once — a full-fleet miss storm landing on your database |
+| **The fix** | Consistent hashing moves only ~`K/N` keys (§1–§2) |
+| **Hot keys** | Replicate to the next `R` ring nodes, or weight the vnodes (§13) |
+| **Its own cache** | The client-side **ring/membership cache** — maps key → node with no extra network hop |
+
+**Invalidation is mostly free here.** A node's departure *implicitly* invalidates everything it held: no purge needed, the keys simply aren't found and get refilled. The membership cache is invalidated by gossip (§10) carrying a version epoch, so a stale ring is **detected** rather than silently misrouting.
+
+**The failure mode worth naming:** a ring change during peak traffic produces a miss burst precisely when the origin has the least headroom. So drain migrations gradually (§8), and warm the new node before it takes full share.
+
+**And the asymmetry to remember:** when the ring moves under a *cache*, you lose speed. When it moves under a *database*, you lose the data — unless it's re-replicated first.

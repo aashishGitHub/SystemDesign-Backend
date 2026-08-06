@@ -189,6 +189,10 @@ By the law of large numbers, with 150+ vnodes per node, the distribution approac
 
 If any one vnode arc is large, it's balanced by smaller arcs elsewhere on the same physical node.
 
+**The lookup logic changes not at all** — that's the trick in this question. Only *how many positions each node claims* changes; a lookup is still "hash the key, walk clockwise to the next position." The lookup path never learns that vnodes exist.
+
+And the reason that matters more than balance: **vnodes spread failure, not just load.** With one position per node, a death dumps that node's entire share onto its single clockwise successor, which then falls over too — the textbook cascading failure. With 150 positions, the dead node's 150 arcs hand off to ~150 different neighbours.
+
 ---
 
 ### A11. 6 nodes × 256 vnodes: even distribution guarantee?
@@ -410,6 +414,15 @@ When NodeB recovers and rejoins the ring:
 
 If NodeB never recovers: the hints are held for a configurable window (e.g., 3 hours in Cassandra), then dropped. If durability requires it, anti-entropy (Merkle tree reconciliation) can catch the gap during repair.
 
+**The client already got a `200 OK` — here are two ways that write is still lost:**
+
+| Loss path | Why it happens |
+|---|---|
+| **The substitute dies before handoff** | A hint lives on **one** node, unreplicated. NodeD holding the only copy is a single point of failure for a write the client believes is durable |
+| **The hint window expires** | NodeB stays down longer than the retention window (~3h), the hint is dropped, and nothing else knows the write existed |
+
+This is the honest cost of a sloppy quorum, and saying it unprompted is the senior signal here: **you traded durability for write availability, and the acknowledgement is weaker than it looks.** The mitigation isn't a better hint — it's anti-entropy repair, and accepting that "acknowledged" means "probably durable" for the length of the handoff window.
+
 ---
 
 ## Level 6 — Real Systems
@@ -622,17 +635,28 @@ Detection methods:
 
 ### A30. Jump consistent hash
 
-Jump consistent hash (Google, 2014) is a minimal perfect hash function that maps a key to a bucket (node index) in O(1) time and O(1) space:
+Jump consistent hash (Lamping & Veach, Google, 2014) maps a key to a bucket index using **no stored state at all** — no ring, no vnode table, no membership list. Given only `(key, numBuckets)`, every caller computes the same answer.
 
-```python
-def jump_consistent_hash(key: int, num_buckets: int) -> int:
-    b, j = -1, 0
-    while j < num_buckets:
-        b = j
-        key = ((key * 2862933555777941757) + 1) & 0xFFFFFFFFFFFFFFFF
-        j = int((b + 1) * (1 << 31) / ((key >> 33) + 1))
-    return b
+Instead of looking the key up in a structure, it **replays the key's history of moves** as the cluster grew from 1 bucket to N:
+
+```mermaid
+flowchart LR
+    S["with 1 bucket,<br/>every key is in bucket 0"] --> D{"cluster grows by one.<br/>does THIS key jump<br/>to the new bucket?<br/><i>decided by the key's own<br/>deterministic hash sequence</i>"}
+    D -->|"no — stay<br/>(probability b/(b+1))"| D
+    D -->|"yes"| J["remember the new<br/>bucket index"]
+    J --> C{"reached<br/>numBuckets?"}
+    C -->|"no — keep replaying"| D
+    C -->|"yes"| OUT["return the last bucket<br/>it jumped to"]
+
+    style S fill:#dbeafe,stroke:#1d4ed8
+    style D fill:#fef9c3,stroke:#ca8a04
+    style C fill:#fef9c3,stroke:#ca8a04
+    style OUT fill:#dcfce7,stroke:#16a34a
 ```
+
+Because growth only ever adds *new* jump opportunities, a key can move **onto** a new bucket but two existing buckets can never trade keys. Verified on 100K keys: 10 buckets each got ~10,000 keys, and going 10 → 11 moved **9.04%** (ideal `1/11` = 9.09%) — every one of them onto the new bucket, none shuffled between existing ones.
+
+If you implement it, the jump decisions are driven by a 64-bit linear congruential generator that **relies on 64-bit integer overflow** — in a double-based language (JavaScript, Lua) you must use an explicit 64-bit integer type or the arithmetic silently loses precision and the distribution skews.
 
 | Property | Ring-Based Consistent Hashing | Jump Consistent Hash |
 |---|---|---|

@@ -1052,3 +1052,36 @@ If the tower loses power (outage), planes circle (cache hits) while backup gener
 | Fan-out throughput | ~300K writes/sec sustained |
 | Timeline memory | 200M users × 16 KB = 3.2 TB |
 | WebSocket scale | 100K connections per server |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Twitter:** Kafka topics at **replication factor 3** + Redis home-timeline replicas (async) for instant failover.
+- **FB NewsFeed:** **TAO** multi-region graph-cache replication with **async invalidation** — local cache reads, primary-region writes.
+- **Instagram:** primary-replica DB shards + multi-region media CDN (async).
+- **Why here:** reads are global and enormous → replicate caches near users; the write path stays in one region and propagates via background pipelines.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (rows 3, 6 & 13) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** CDN for media → **Redis timeline lists, one per user** (§3) → a TAO-style **graph cache** in front of MySQL for the social graph → a ranking-feature cache (§6).
+- **Strategy:** **fan-out-on-write *is* refresh-ahead** — the timeline in Redis is not a cache in front of a query, it's a **precomputed read model**, and there is no equivalent query to fall back to. Celebrity accounts (§2) flip to **fan-out-on-read**, merging a handful of author lists at query time with cache-aside. The graph cache is read-through.
+- **Invalidation:** timelines are **append-and-trim** to a bounded window (roughly the last several hundred posts) — the trim *is* the eviction, so memory is bounded by design rather than by policy. Deletes and blocks are handled by **filtering at read time**, because rewriting a deleted post out of 100M materialized lists costs more than checking a small exclusion set on the way out. Cross-region, the write region emits **asynchronous invalidations** to the graph caches (matrix row 13).
+- **Why here:** the hybrid fan-out decision — the centerpiece of this topic — is **entirely a caching-cost calculation**: write amplification versus read latency. A user with 100M followers costs 100M list writes on fan-out-on-write; merging 50 author lists at read time costs 50 reads. The crossover point is where you draw the celebrity threshold, and being able to reason about it numerically is the whole point of §1–§2. The operational consequence, and the reason the runbooks exist: because the timeline is a **precomputed cache with no queryable origin**, losing a Redis node means **rebuilding** timelines from the graph rather than just refilling on demand. That rebuild path has to be designed, capacity-planned, and rehearsed — a cache you cannot lazily refill is really a derived datastore, and it needs replication for exactly the reason [distributed-caching](../distributed-caching/) gives: to protect the origin from having to serve a cold start.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** edge **API gateway** (SSL termination + **parallel gRPC aggregation** of Feed/Profile/Media into one JSON) + **Singleflight request collapsing**.
+- **Layer:** L7 (gRPC / HTTP/2, GraphQL for NewsFeed).
+- **How:** when a celebrity tweets, Envoy **collapses** thousands of identical `GET`s into one origin call — the classic **thundering-herd defense**.
+- **🧭 Recall:** *crypto once at the edge, gather many services into one response, collapse duplicate reads.*

@@ -1035,3 +1035,24 @@ Bigtable → SSTable model at Google scale:
 | "Write-heavy" is not enough | Write SHAPE (small-random vs large-seq) + read/scan/txn mix decide LSM vs B-tree |
 | Capacity math move | Provision for amplified write BW + replicated, space-amplified footprint |
 | Real systems | B-tree: Postgres, InnoDB. LSM: RocksDB/LevelDB, Cassandra/Scylla, HBase/Bigtable |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** this topic is the **layer beneath** replication — it's what produces the thing that gets replicated. The **WAL** (§9) is the stream: log shipping / streaming replication ships WAL records and the follower **replays them exactly as crash recovery would** (§10).
+- **Mode:** sync / semi-sync / async is, concretely, just *"how long the leader waits for a follower to acknowledge a WAL record before acking the client."* There is no other mechanism hiding behind those words.
+- **Why here:** the unifying insight is that **replication and crash recovery are the same mechanism pointed at two destinations** — one at a local disk, one at a peer. Say that and the whole replication taxonomy in [sharding-replication](../sharding-replication/) stops being vocabulary and becomes a consequence. Two architect-level consequences follow. First, **`fsync` policy sets your real RPO**: a leader that acknowledges before its own log is durable can lose committed writes *even with a perfectly healthy synchronous replica*, because the write never existed durably anywhere — this is the subtlest durability bug in the topic. Second, **group commit** (§9) is what makes synchronous durability affordable at all: batching many transactions into one `fsync` amortizes the cost, which is why "sync replication is too slow" is usually a configuration claim rather than a physical one.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (§2b, buffer pool vs block cache) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** OS **page cache** → the engine's **buffer pool** (B-tree, §2) or **block cache** (LSM, §4) → **Bloom filters** (§5) to avoid reading a file that can't hold the key → disk.
+- **Strategy:** read-through and entirely internal — but the two engine families make **opposite** caching bargains, and that contrast is the most transferable idea in this topic. A **B-tree buffer pool caches mutable pages**: a write dirties a cached page, so the cache holds state that doesn't exist on disk yet, which forces **write-back plus a WAL** for durability (§9) and makes flush scheduling a correctness concern. An **LSM block cache caches immutable blocks**: nothing cached is ever dirty, so it's a pure read cache that can never be wrong.
+- **Invalidation:** B-tree pages are **invalidated in place** by writes (and must be flushed before eviction if dirty). LSM blocks are **never invalidated at all** — **compaction (§6)** retires whole SSTables, and their blocks are simply evicted as they stop being referenced.
+- **Why here:** this is the cleanest illustration of the rule the rest of the repo keeps applying: **mutable data forces write-back plus a log; immutable data gives you a trivially correct cache.** Everything from content-addressed chunks in [file-storage](../file-storage/) to version-keyed product bodies in [e-commerce](../e-commerce/) to hot-swapped tries in [search-autocomplete](../search-autocomplete/) is the same trade made one level up. Two architect-level notes: **`fsync` policy sets your real RPO** (§9) — a write acknowledged from the buffer pool before the log is durable is a lost write, no matter how healthy the replica is — and the sizing rule from §1/§8 is a **cliff**: while the working set fits the buffer pool you get memory-speed reads, and the moment it doesn't, every read becomes an I/O and p99 collapses far faster than the memory shortfall suggests.

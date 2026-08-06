@@ -1159,6 +1159,485 @@ Architecture changes:
 
 ---
 
+## Level 9 — Digital Tickets, QR Codes & Notifications
+
+### A43. Issuing the ticket — what goes inside the QR
+
+Ticket issuance is a **separate, downstream step from `CONFIRMED`, not part of the payment transaction**. The moment the booking commits, we emit an event and let a ticket service mint the credential. Crucially, the QR carries a *self-verifying signed token*, not a raw identifier.
+
+```
+On BookingConfirmed (emitted in the SAME tx as the CONFIRMED write — outbox pattern):
+  1. Ticket service consumes the event (at-least-once, idempotent by booking_id).
+  2. Allocate an OPAQUE ticket_id — random UUID. NOT sequential, NOT the seat id.
+  3. Build a token binding: ticket_id, booking_id, event, seat, holder, nonce,
+     generation, valid window, key id.
+  4. Sign it (asymmetric private key, or per-event HMAC key). Persist canonical ticket row.
+  5. Render QR from the signed token; deliver to wallet / email / app (see A45).
+```
+
+The payload inside the QR is a compact signed token. A QR holds only a few KB (approximately ~2–3 KB binary at high versions; illustrative — verify), and dense high-version QRs scan poorly off a phone screen, so keep the payload to a **few hundred bytes**: prefer a compact binary encoding (CBOR/COSE- or CWT-style — verify against current specs) over a verbose JSON/JWT, whose base64url text is bulkier for the same fields:
+
+```ts
+type TicketToken = {
+  v: 1;                     // schema version — lets a gate reject unknown formats
+  tid: string;              // opaque RANDOM ticket id — never the booking/seat id
+  bid: string;              // booking id this credential is bound to (audit + revoke scope)
+  eid: string;              // event id — gate checks it matches this gate
+  seat: string;             // section/row/seat, for display + audit only
+  sub: string;              // holder ref (hashed account id, not raw PII)
+  jti: string;              // random nonce — prevents replay of an identical signed blob
+  gen: number;              // credential generation — bumped on re-issue (see A45)
+  nbf: number; exp: number; // valid-from / valid-until — the entry window
+  kid: string;              // signing key id — enables key rotation
+  sig: string;              // signature computed over all fields above
+};
+```
+
+Why it must NOT be a *raw, unsigned* booking id or seat id (binding the booking id **inside** a signed token, as `bid` above, is fine and useful — the failure is shipping a bare id as the *entire, unsigned* payload):
+
+| If the QR contains… | Forgeable? | Enumerable? | Tamper-evident? | Revocable / rotatable? |
+|---|---|---|---|---|
+| Raw booking id / seat id (unsigned) | Yes — anyone can fabricate the string | Yes — sequential ids are guessable by a bot | No integrity at all | No — nothing to verify against |
+| Signed token (above) | No — needs the private/HMAC key to mint | Opaque random `tid`/`jti`, nothing to guess | Signature breaks if a single bit changes | Yes — `kid` rotation + `gen`-scoped revocation |
+
+Three concrete failures of a raw, unsigned id: (1) it is **enumerable** — guess valid ids and print your own; (2) it carries **no integrity** — the gate has no way to know the string is authentic; (3) it has **no binding** — you cannot tie it to a signing key, a validity window, or a revocation generation. The id is data; the QR must carry *proof*. The event emission itself rides the outbox — see [distributed-transactions](../distributed-transactions/) and [message-queues](../message-queues/).
+
+**Key takeaway: the QR carries a signed, opaque, time-bounded token — binding the booking id, not exposing it raw — that the gate can verify without trusting the string itself; ticket issuance is a downstream, idempotent projection of the CONFIRMED booking, never part of the payment transaction.**
+
+---
+
+### A44. (Anti-fraud) Un-forgeable, un-shareable QR + offline gate validation
+
+Three distinct attacks need three distinct defenses — do not conflate them:
+
+- **Forgery** (fabricate a ticket from scratch) → a cryptographic signature. Prefer **asymmetric** signing: the gate holds only the public key, so a compromised gate device still cannot *mint* tickets. HMAC is simpler but every gate holds the minting secret.
+- **Screenshot-and-reuse by two people** → a signature alone does not help; a screenshot is a *valid copy*. You need single-use (first scan wins, recorded) and/or a rotating code that makes a screenshot stale within seconds.
+- **Sharing to defeat entry** → a rotating code lives in the app (the seed is delivered securely and never leaves the device), so a forwarded screenshot expires.
+
+| Dimension | Signed static token | Rotating time-based code (TOTP-style, RFC 6238) |
+|---|---|---|
+| Stops forgery | Yes (signature) | Yes (signature + seed) |
+| Stops screenshot reuse | No on its own — needs online single-use dedupe | Yes — code changes every ~15s (illustrative — verify) |
+| Works offline at gate | Yes — verify signature with cached public key | Yes, but gate must pre-download per-ticket seeds |
+| Needs the live app | No (PDF / wallet is fine) | Yes (seed + clock live in the app) |
+| Revocation | Ship a revocation-list delta | Rotate the seed / generation |
+| Complexity | Low | Higher (seed distribution, clock-skew handling) |
+
+Real-world: Ticketmaster's SafeTix is publicly described as a rotating/refreshing barcode — treat the exact mechanism as verify before quoting it.
+
+Offline validation — the gate does **zero network calls at the turnstile**, and the signature is checked *before* trusting any other field in the token (validating an unverified field first would let a forged token influence the decision path):
+
+```
+# BEFORE doors (over any network, once): each gate device downloads
+#   - event public key (or per-event HMAC key)
+#   - revocation list for the event, keyed by (ticket_id, generation)
+#   - [rotating mode only] the encrypted per-ticket seed bundle
+# AT the turnstile the gate is OFFLINE:
+
+validate(qr, now):
+  t = parse(qr)
+  if not verify_sig(t, gate.pubkey):        return REJECT("forged")   # FIRST — local, no network
+  if t.eid != gate.event_id:                return REJECT("wrong event")
+  if now < t.nbf or now > t.exp:            return REJECT("outside window")
+  if (t.tid, t.gen) in gate.revoked:        return REJECT("revoked")  # scoped by generation
+  if rotating:
+     expected = totp(gate.seed[t.tid], now, period=15, skew=±1)       # illustrative — verify
+     if t.code not in expected:             return REJECT("stale / replayed")
+  if t.tid in gate.local_scanned:           return REJECT("already used")   # this lane
+  gate.local_scanned.add(t.tid, now)   # queue for peer/central sync on reconnect
+  return ACCEPT
+```
+
+Note the two keys serve different scopes on purpose: the **used-set** (`local_scanned`) is keyed by `tid` alone — a physical seat is scanned once, full stop — while the **revocation list** is keyed by `(tid, gen)`, because a re-issue (A45) bumps the generation and must invalidate only the *old* generation, not the ticket id forever. The rotating code itself is validated as a *separate* check (against the seed) — it is not covered by the outer token's signature, so a compromised seed and a compromised signing key are independent failure modes.
+
+Double-entry across *different* lanes while offline: each lane keeps a local scanned-set, lanes gossip scans peer-to-peer over the venue LAN, and all reconcile to the central log on reconnect. A determined double-scan across two truly-partitioned lanes in the same second is the residual risk — shrunk to seconds by rotating codes (the copy at lane 2 is already stale) and covered by staff. The gate-sync transport choice belongs to [communication-protocols](../communication-protocols/).
+
+Named tradeoff — offline availability vs perfect single-use: strict global single-use needs a consistent online check; offline gates trade that for availability and accept a tiny reconciliation window, which rotating codes compress to seconds. A second, orthogonal tradeoff sits in seed distribution: pushing every per-ticket rotating-code seed to every gate device in advance is exactly what makes offline validation possible — but it also means a single **stolen gate device carries every seed for the event** and could mint valid-looking rotating codes. Asymmetric signing on the outer token bounds this (a stolen gate still can't *forge the signature*), while seed exposure is scoped to reduce blast radius (e.g. per-gate seed subsets, if venue layout allows) and always covered by short-lived, revocable rotation.
+
+**Key takeaway: verify the signature first, before trusting any other field; sign to stop forgery, rotate (or enforce online single-use) to stop screenshot reuse, and validate offline by shipping the public key plus a (ticket_id, generation)-scoped revocation list to each gate so every check is local — the network is a sync channel, never on the turnstile's critical path.**
+
+---
+
+### A45. Storing, delivering, and re-issuing the ticket
+
+Core principle: the **canonical ticket lives server-side**; every channel below is a *rendering or a pointer*, never the source of truth. That is exactly what makes safe re-issue possible.
+
+| Channel | Offline access | Rotating code | Forwardable risk | Push-update to fix / re-issue |
+|---|---|---|---|---|
+| App + account deep link | Yes (cached) | Yes (app holds the seed) | Low (tied to login) | Yes — app refetches live ticket |
+| Apple Wallet pass (.pkpass, PassKit) | Yes, for the static barcode | No live rotation — a pass has no code execution; a "refresh" is a server push, not a local rotation | Medium | Yes, via APNs + the pass web service pushing an updated pass (verify) |
+| Google Wallet pass (Google Wallet API) | Yes, for the static barcode | Same limitation as above (verify) | Medium | Yes, via a server-initiated object update (verify) |
+| Email + PDF (embedded QR) | Yes | No (static) | High — just forward the file | No — must re-send |
+
+A wallet pass has **no code execution environment** — it cannot run a TOTP loop on its own. A pass showing a barcode that appears to "rotate" is being *refreshed by a server push* (Apple: APNs wakes the app which calls the pass web service; Google: a server-side object update) — treat both as verify-before-quoting, and note that a *truly offline*, self-rotating code still requires the live app with the seed on-device (A51), not the wallet pass alone.
+
+Re-issue a lost ticket without a second valid entry — the invariant is **seat → exactly one active ticket_id → exactly one active credential generation**, and the check must land on the same `(tid, gen)` scoping the gate already enforces (A44):
+
+```
+reissue(ticket_id):
+  tx:
+    g    = current_generation(ticket_id)
+    revoke(ticket_id, g)                # (ticket_id, g) added to the revocation list —
+                                         # old QR / screenshot now FAILS validation
+    g2   = g + 1
+    seed2 = rng()                       # new rotating seed (if rotating codes used)
+    persist(ticket_id, generation=g2, seed=seed2)
+  push_wallet_update(ticket_id)         # refresh the pass IN PLACE — no duplicate pass
+  enqueue revocation_delta(ticket_id, g) -> all gates   # offline gates learn at next sync
+  # Seat still maps to ONE ticket_id; only (ticket_id, g2) validates.
+  # The old credential is NOT "a second ticket" — it is a REVOKED prior generation.
+```
+
+Why this beats "just email another QR": a naive re-send leaves two scannable credentials for one seat → double entry. Binding validity to a **generation counter** (plus the revocation delta pushed to offline gates, scoped exactly as A44's gate check expects) means minting a new credential *atomically invalidates the old one*, and wallet push-update refreshes the existing pass rather than adding a second. The re-issue endpoint and its idempotency key belong to [api-design](../api-design/); the wallet push refresh rides [notification-system](../notification-system/).
+
+**Key takeaway: keep one server-side canonical ticket and treat wallet, email, and app as disposable renderings; re-issue by bumping the generation and pushing a (ticket_id, generation)-scoped revocation delta so there is always exactly one valid credential per seat — old copies fail verification instead of becoming a second door.**
+
+---
+
+### A46. Notification flow: confirmation, reminders, day-of updates
+
+Two trigger classes: **event-driven** (immediate) and **time-scheduled** (reminders). Both run through the shared [notification-system](../notification-system/) over a durable queue — see [message-queues](../message-queues/).
+
+| Notification | Trigger | Timing | Channel ladder | Idempotency key |
+|---|---|---|---|---|
+| Booking confirmation | `BookingConfirmed` event | Immediate | push → email (always email a receipt) | (user, booking, "confirm") |
+| Reminder T-24h | scheduled at booking time | event_start − 24h | push → SMS fallback | (user, event, "rem_24h") |
+| Reminder T-1h | scheduled at booking time | event_start − 1h | push → SMS fallback | (user, event, "rem_1h") |
+| Day-of entry update (gate/time change) | ops event | on change | push + SMS (urgent) | (user, event, "dayof", change_hash) |
+
+Reliable scheduling — persist the schedule durably, **never rely on in-process timers** (they die with the pod), and only schedule reminders that are still in the future (a booking made 10 minutes before doors needs no T-24h row):
+
+```
+on BookingConfirmed(b):
+  # durable rows — survive restarts and redeploys; skip any reminder already in the past
+  if b.event_start - 24h > now(): schedule(user=b.user, event=b.event, type="rem_24h", send_at=b.event_start - 24h)
+  if b.event_start - 1h  > now(): schedule(user=b.user, event=b.event, type="rem_1h",  send_at=b.event_start - 1h)
+
+# dispatcher — runs every ~60s (illustrative — verify), at-least-once
+for row in due(now):                          # send_at <= now AND status = PENDING
+  if not lease(row, ttl=120s): continue       # lease TTL > dispatch interval, so one
+                                               # worker holds the row for the whole send,
+                                               # not just until the next tick claims it too
+  key = (row.user, row.event, row.type)       # stable idempotency key (channel-independent)
+  if not ledger.insert_if_absent(key):        # UNIQUE(key) IS the dedupe guarantee
+      row.status = SKIPPED_DUP                # a duplicate attempt is a silent no-op
+      continue
+  send(row, channel = pick(row), idempotency_key = key)  # SEND FIRST, using `key` as
+                                               # the provider's own idempotency key too
+  row.status = SENT                           # mark AFTER a successful send call
+```
+
+- **Idempotent (never double-send):** the send-ledger has a UNIQUE constraint on the idempotency key, and that same key is passed to the provider as *its* idempotency key. The order matters: **send before marking SENT** (with the provider-level idempotency key already carrying the dedupe guarantee), so a crash between "send" and "mark SENT" causes a harmless retry that the *provider* collapses — the reverse order (mark-then-send) would let a crash after the mark silently drop a notification that was never actually sent.
+- **Dedupe across push/email/SMS:** the key deliberately excludes channel — it is per (user, event, type). Send the *preferred* channel first and only escalate to the next rung if the first is not delivered within a window. One logical notification = at most one delivery, not one per channel (the confirmation is the intentional exception — always keep an emailed receipt).
+
+Named tradeoff — at-least-once + idempotency vs exactly-once: queues give at-least-once cheaply; true exactly-once delivery is expensive and fragile. Take at-least-once delivery and make the *effect* exactly-once with the UNIQUE-key ledger, sending before marking so a crash never causes a silent loss — see [message-queues](../message-queues/).
+
+**Key takeaway: schedule only future-dated reminders as durable rows (never in-process timers), send before marking SENT so a crash retries instead of silently dropping, and dispatch at-least-once while making the effect exactly-once with a UNIQUE idempotency-key ledger keyed by (user, event, type).**
+
+---
+
+### A47. (Failure mode) CONFIRMED but ticket issuance fails
+
+The framing that saves you: **`CONFIRMED` is the source of truth; the QR is a downstream projection.** The user's money and seat are already safe — issuance is a *retryable render*, so this is never surfaced as a payment error.
+
+| Layer | State after the failure | What we do |
+|---|---|---|
+| Payment | Captured | Leave it — the charge is valid, the seat is theirs |
+| Booking | CONFIRMED (durable) | Source of truth — unchanged |
+| Ticket / QR | Missing | Retry issuance idempotently until it succeeds |
+| User sees | "Booking confirmed — your ticket is being prepared" + booking reference | Never "payment failed"; the ticket appears via push/poll when ready |
+
+Guaranteeing *exactly one* valid ticket **that is actually delivered** — outbox + idempotent consumer, with minting and delivery treated as two separately-retriable steps:
+
+```
+# 1) Emit the issuance request ATOMICALLY with the CONFIRMED write (outbox pattern)
+tx:
+  booking.status = CONFIRMED
+  outbox.insert(TicketIssuanceRequested{ booking_id })    # same tx -> event cannot be lost
+
+# 2) A relay publishes outbox rows to the ticket queue, retrying until acked (at-least-once)
+
+# 3) Ticket worker: MINT is idempotent (guarded once), DELIVER always runs on retry —
+#    otherwise a crash between mint and deliver leaves a ticket that exists but was
+#    never sent, and a naive "if issued: return" would skip delivery forever.
+on TicketIssuanceRequested(booking_id):
+  ticket = tickets.get_or_create(booking_id)   # UNIQUE(booking_id) -> at most ONE row
+  if not ticket.issued:
+      ticket.credential = sign(build_token(booking_id))
+      ticket.issued = true                     # mint happens exactly once
+  deliver(ticket)                              # ALWAYS attempt delivery — itself idempotent
+                                                # (wallet push / resend email is safe to repeat)
+  ack
+# UNIQUE(booking_id) is the mint guarantee: N deliveries of the event -> exactly ONE credential.
+# deliver() being unconditional is the delivery guarantee: a retry after a partial
+# failure still reaches the user instead of silently stalling on an already-issued ticket.
+```
+
+- **If issuance keeps failing:** after N retries the message parks in a dead-letter queue and an alert fires — but the seat is still validly booked. Fallback path: the box office looks the booking up by reference and admits or issues at the gate, because the CONFIRMED booking — not the QR — is the entitlement.
+- **Why not issue the ticket inside the payment transaction?** That couples a durable money/seat commit to a fragile render step: a QR failure would either roll back a real payment or block the response. Decoupling via the outbox lets payment commit instantly and issuance heal asynchronously. See [distributed-transactions](../distributed-transactions/) (outbox / saga) and [message-queues](../message-queues/) (at-least-once + DLQ); the "ticket is ready" nudge rides [notification-system](../notification-system/).
+
+**Key takeaway: treat the ticket as an idempotent projection of the CONFIRMED booking — mint once under a UNIQUE(booking_id) guard but re-run delivery unconditionally on every retry — so the user sees "confirmed, ticket on its way," retries converge to exactly one delivered credential, and the booking record (not the QR) remains the real entitlement if issuance never fully recovers.**
+
+---
+
+## Level 10 — Frontend Architecture (Architect)
+
+### A48. Rendering 80k seats — SVG vs Canvas vs WebGL, virtualization, hit-testing
+
+A seat map is a **spatial dataset, not a document**. At up to ~80,000 seats (illustrative venue ceiling — verify against your largest venue) the renderer choice is dominated by how many primitives you can paint at 60 fps and how cheaply you can find the seat under a tap.
+
+| Renderer | Sweet spot | Behavior at 80k | Hit-testing |
+|---|---|---|---|
+| **SVG** (one DOM node/seat) | Small venues, ~≤ a few thousand seats (illustrative — verify) | 80k DOM nodes blow up layout/style-recalc, memory, GC → pan/zoom janks | Free (DOM events) — but that convenience is exactly what collapses at scale |
+| **Canvas 2D** (immediate mode) | Pragmatic default, up to tens of thousands (illustrative — verify) | One `<canvas>`, no per-seat DOM; draw only visible seats. CPU-bound on huge redraws | Manual — spatial index or color-picking (below) |
+| **WebGL** (GPU, instanced) | 80k+ with buttery zoom, or animated maps | GPU instancing draws all seats as instances of one quad → 60 fps even at full venue | Manual — same spatial index, or GPU color-id picking |
+
+Default to **Canvas 2D + viewport virtualization**; reach for **WebGL instanced rendering** only when profiling shows Canvas can't hold 60 fps on your target low-end device (A53). Keep a few **SVG/DOM nodes as an overlay** for interactive chrome (selection ring, tooltip, held-seat highlight) layered above the raster base — a hybrid.
+
+```
+Level-of-detail by zoom:
+  zoomed OUT  → draw SECTION polygons + heatmap color (from section counts), NOT seats.
+  mid zoom    → draw seat dots (no labels).
+  zoomed IN   → draw seat rects + row/seat labels, viewport only.
+
+Viewport cull each frame (requestAnimationFrame):
+  visible = spatialIndex.query(viewportRectInWorldCoords)   # quadtree / uniform grid
+  for seat in visible: draw(seat, statusColor[seat.id])
+  # 80k seats total, but only ~hundreds–low-thousands are ever on screen.
+```
+
+| Hit-test technique | How | Cost |
+|---|---|---|
+| **Spatial index** (quadtree / uniform grid) | tap (x,y) → world coords → query the index for the seat at that point | O(log n)/O(1); reuse the same index built for culling |
+| **Color-id picking** | render an offscreen "hit canvas", each seat a unique RGB id; read the pixel under the tap via `getImageData`, decode the id | one extra buffer; robust for irregular seat shapes |
+
+For smooth zoom/pan, keep a world→screen **transform matrix**; on pan, translate the matrix and repaint culled seats in `requestAnimationFrame` (optionally a cheap CSS `transform` on the canvas during the gesture, then re-raster crisp on settle). Handle `window.devicePixelRatio` so retina stays sharp. Seat coordinates are immutable per venue configuration → precompute and serve them from the edge, see [cdn-edge](../cdn-edge/); only the *status* layer is dynamic (A49).
+
+**Named tradeoff — fidelity vs frame rate:** SVG gives free hit-testing and crisp DOM styling but collapses at venue scale; Canvas/WebGL give 60 fps at 80k but you own hit-testing and text yourself. At ~80k the frame rate must win — you buy back the convenience with a spatial index and an SVG overlay for chrome only.
+
+**Key takeaway: Canvas/WebGL over SVG at venue scale; virtualize to the viewport with a spatial index that doubles as your hit-test; and treat static geometry (edge-cached) as a separate problem from dynamic status.**
+
+---
+
+### A49. Real-time availability and lock status — transport, granularity, fan-out
+
+A seat must flip to **held the instant another user grabs it**, yet you must never push 80k seat states to every client. Two levers do the work: the right **transport**, and **viewport/section-scoped subscriptions carrying deltas**.
+
+| Transport | Direction | Fit for status | Notes |
+|---|---|---|---|
+| **WebSocket** | Bidirectional | **Recommended** — the client must send subscribe/unsubscribe intent (as it pans/zooms across sections) on the same channel the server pushes status deltas over; one duplex connection covers both | More infra (sticky sessions/gateway) than SSE. See [communication-protocols](../communication-protocols/) |
+| **SSE** (EventSource) | Server → client only | Fallback — fine if subscription changes are rare, but forces "which sections am I watching" onto a separate side-channel POST | Simpler, native auto-reconnect + `Last-Event-ID`. See [sse](../sse/) |
+| **Long-poll / poll** | Client pull | Last-resort fallback | Wastes requests, higher latency; use when WS/SSE are blocked (A53) |
+
+Recommend **WebSocket** as the primary transport for the status stream: seat browsing is genuinely bidirectional — the client's viewport moves (pan/zoom/section-switch) constantly re-scope *which* deltas it wants, and a duplex channel carries that upstream "subscribe to section C" traffic natively instead of routing it through a side HTTP call. Fall back to SSE (receive-only, resync via `Last-Event-ID`) where WebSocket is blocked, and to polling as a last resort (A53). The fan-out/pub-sub shape is the same one behind a chat room — see [chat-system](../chat-system/).
+
+```
+Initial:  one SNAPSHOT of ONLY the section(s) currently in the client's viewport, as a
+          packed bitmap (~2 bits/seat — a few hundred bytes for a section of a few
+          thousand seats; the "~20 KB for 80k" figure is the whole-venue encoding
+          density, illustrative — verify per A32 — NOT what you actually send).
+Steady:   DELTAS only →  { ev:123, seat:"B-R3-A14", status:"HELD", v:42 }
+          a version/seq per seat so the client drops out-of-order/duplicate updates.
+```
+
+Avoiding the 80k-to-everyone push is the crux:
+
+```
+1. SCOPE to what the user sees. The client subscribes to the SECTION(s) in its
+   viewport (a topic/room per section) over the WebSocket; the server fans a seat
+   delta out only to that section's subscribers — not to every connection.
+   channel: seatmap:event:123:section:B
+2. COALESCE. During a hot sale, batch deltas per section and flush every ~100 ms
+   (illustrative — tune) so a burst becomes one framed message, not thousands.
+3. RESYNC on (re)connect: pull a fresh section snapshot (cheap bitmap) from cache,
+   then resume deltas from your last seq/version — never replay full history.
+```
+
+Server-side, status changes publish to a pub/sub layer keyed by section, and edge nodes fan out to subscribers; the snapshot/bitmap lives in the cache tier, see [distributed-caching](../distributed-caching/). Crucially the pushed status is **display only** — a client acting on a stale "available" is still rejected by the atomic hold at the source of truth (A16), so a dropped delta is a cosmetic bug, never an overbooking.
+
+**Key takeaway: WebSocket is the primary transport because the client's own section subscriptions are upstream traffic, not just downstream status — scope subscriptions to the sections a client can actually see, push versioned deltas (not the full map, and not a whole-venue-sized snapshot), and remember the stream only paints pixels; the source-of-truth CAS, not the stream, prevents overbooking.**
+
+---
+
+### A50. Checkout UX — countdown timer, mid-hold edits, offers, honest timer
+
+The hold TTL is **server-authoritative** (A3); the client timer is a *projection* of it, never the source. The UX job is to keep that projection honest under clock skew, tab-sleep, and reconnects — and to handle the case where the server ends the hold **early** — so the user is never surprised by an unannounced expiry.
+
+```ts
+// Server returns absolute expiry on ITS clock, plus its "now", so we can de-skew.
+type HoldResp = { expiresAtServerMs: number; serverNowMs: number };
+
+function makeCountdown(r: HoldResp) {
+  const skew = r.serverNowMs - Date.now();       // captured ONCE at hold time; this
+                                                  // estimate goes stale by ~half the
+                                                  // request's round-trip time, which
+                                                  // SAFETY_MS below exists to absorb
+  const correctedExpiry = r.expiresAtServerMs;   // measured on the server timeline
+  return () => {
+    const nowServer = Date.now() + skew;
+    const SAFETY_MS = 5_000;                      // expire UI early — illustrative, tune
+    return Math.max(0, correctedExpiry - nowServer - SAFETY_MS);
+  };
+}
+// Re-fetch authoritative TTL on: reconnect, tab re-focus (visibilitychange / Page
+// Visibility API), and periodically — background tabs throttle timers, so a resync
+// on focus stops a "frozen" countdown from lying to the user.
+```
+
+The client timer hitting zero **must not release the seat** — only the server TTL does that (A3). Client expiry just disables "Pay" and forces a re-check. The reverse case matters just as much: **a positive client countdown never proves the hold is still alive**, because the server can end a hold early — a shorter real TTL than advertised, a fraud/admin action, or a forced release. Handle it on two paths, not one:
+
+- **Real-time path:** the same section delta stream (A49) carries a `HELD → AVAILABLE` transition for the user's *own* held seat if the server released it; on receipt, immediately move focus off the dead hold, disable "Pay," and surface a re-select prompt — don't wait for the countdown to catch up.
+- **Payment-time path (the actual guarantee):** whether or not the real-time delta arrives in time, the payment call itself **re-validates the hold server-side** before charging (A16's atomic guard) — so even a fully stale client countdown can never charge a card for a seat that's no longer held.
+
+| Action | Client does | Server authority |
+|---|---|---|
+| Add seat B22 mid-order | POST a new atomic hold for B22 (per A10) | Grants only if free; order TTL = min of member holds (or one order-level TTL) |
+| Remove a seat | Release that hold | Seat → AVAILABLE at once; order total recomputed server-side |
+| Apply offer/promo | Show optimistic price, then reconcile | Server validates the code, recomputes, **locks the price into the hold** (A42) |
+| Timer during edits | Re-render from the authoritative `expiresAt` | Adding a seat does **not** silently extend the TTL unless the server says so |
+| Server ends hold early | Real-time delta moves focus + disables Pay | Payment re-check is the actual backstop regardless of client state |
+
+Optimistic UI is fine for snappiness, but the **price paid and the seats owned are decided server-side** — the discount is validated and the amount snapshotted into the hold, so payment charges the quoted price, not one that moved mid-checkout (A42).
+
+**Named tradeoff — responsiveness vs authority:** optimistic timer/price updates feel instant but can diverge from the server; you resolve it by rendering only from server-provided absolutes, resyncing on focus/reconnect, and — critically — never trusting the countdown as proof of a live hold, since only the server's re-check at payment time is authoritative.
+
+**Key takeaway: the server TTL is the only real clock and can end a hold early at any time; the client timer is a skew-corrected, safety-buffered projection that resyncs on focus/reconnect and reacts to early-release deltas, but the actual guarantee against a stale hold is the server re-validating at the moment of payment — never the countdown.**
+
+---
+
+### A51. Client ticket storage and QR — offline at the gate, rotating codes, wallet
+
+The gate is the worst network environment in the whole system (a metal-and-concrete hall with tens of thousands of phones), so the ticket must render with **zero signal** — everything the scanner needs is already on the device.
+
+| Channel | Offline? | Re-issue safety | Notes |
+|---|---|---|---|
+| **PWA app cache** (IndexedDB + Service Worker Cache API) | Yes — token pre-cached at issuance | Server revokes the old (ticket_id, generation) on re-issue (A45) | Renders the QR from the locally stored signed token |
+| **Wallet pass** (Apple Wallet / Google Wallet) | Yes — wallet stores the pass natively | Push an updated pass; invalidate the old one server-side | Vendor pass formats — mark **verify** (below); no local rotation (A45) |
+| **Email / PDF** | Yes once downloaded | Weakest — screenshots proliferate | Backup channel; still validated at the gate (A44) |
+
+```
+At issuance (online) persist into IndexedDB:
+  - the signed static token (A44), AND
+  - for rotating codes: the per-ticket TOTP seed (RFC 6238-style time-based OTP).
+
+At the gate (offline) render:
+  if static:   QR = encode(signedToken)                        # client-side QR library
+  if rotating: otp = HMAC(seed, floor(deviceClock / step))     # step ~30s, illustrative
+               QR = encode(otp) ; re-render every `step` seconds
+  # HMAC via Web Crypto (crypto.subtle) — real API. QR encoding via a JS QR library —
+  # there is NO native browser QR-GENERATION API, so verify the library choice.
+Gate scanner validates OFFLINE against the same seed / public key (A44), accepting a
+small clock window to tolerate device drift.
+```
+
+Rotating codes raise the bar against screenshot-sharing but do **not eliminate it**: a *static* screenshot shows a code that expires in ~30s (illustrative — verify), so a casually forwarded photo goes stale fast. They do **not** stop a live screen-relay/video call to a second person at the gate in real time, nor extraction of the TOTP seed itself from a rooted/compromised device (the seed sits at rest in IndexedDB). The actual guard against reuse is **gate-side single-use redemption** (first scan wins, A44) plus **revoke-on-reissue** (A45) — rotation narrows the exploitable window, it isn't a standalone defense.
+
+Wallet integration (hedged): Apple Wallet uses PassKit passes (`.pkpass`); Google Wallet uses passes added via an "Add to Google Wallet" flow / Google Wallet API. Both can show a barcode offline, and updates to that barcode arrive via a **server-initiated push** (A45) rather than on-device rotation — exact current capabilities **change over time; verify against current Apple/Google developer docs before committing**. Wallets are a convenience/backup layer *on top of* your own signed token, not a replacement. Delivery, reminders, and re-issue notices ride the flow in A46 and [notification-system](../notification-system/); re-issuing a lost ticket mints a new generation and revokes the old `(ticket_id, generation)`, so there is never a second valid entry (A45).
+
+**Key takeaway: pre-cache a signed token (and a TOTP seed for rotating codes) on the device so the QR both renders and validates offline at the gate; rotation raises the cost of screenshot-sharing but doesn't stop live relay or seed extraction, so gate-side single-use plus revoke-on-reissue is the real guarantee; treat wallets as a verify-first convenience layer.**
+
+---
+
+### A52. Accessibility for a large seat map
+
+You cannot make 80k seats individually tabbable, and a screen reader cannot narrate a pixel canvas. The answer is a **section-scoped semantic grid with roving focus** plus a **non-visual booking path**, so the visual map is an enhancement, not the only door in.
+
+```html
+<!-- The ARIA grid is SCOPED TO ONE SECTION at a time (not all 80k seats in one grid) —
+     matching the same viewport/section scoping used for rendering (A48) and real-time
+     updates (A49), so the accessibility tree never has to represent the whole venue. -->
+<!-- ONE tab stop for the grid (roving tabindex); arrow keys move focus cell→cell. -->
+<div role="grid" aria-label="Section B seat map" aria-rowcount="40" aria-colcount="30">
+  <div role="row" aria-rowindex="3">
+    <!-- tabindex=0 on the ONE focused cell, -1 on all others (roving tabindex) -->
+    <div role="gridcell" tabindex="0" aria-colindex="14" aria-selected="false"
+         aria-label="Section B, Row 3, Seat A14, available, $120">A14</div>
+  </div>
+</div>
+<!-- Arrows move focus; Home/End = row ends; PageUp/Down = jump rows; type-ahead jumps
+     to a row/section. aria-rowindex/colindex stay honest even when the grid is
+     virtualized (A48), so the SR announces the right position. Note the seat's STATUS
+     ("available", "held", "sold") is spoken because it's part of the accessible name
+     (aria-label) — a screen reader user gets the same information a sighted user gets
+     from color, satisfying WCAG 1.4.1 without a separate announcement mechanism. -->
+```
+
+Offer a **text alternative as a first-class path**: a "find seats" form (section, row preference, quantity, accessibility needs) that returns seats without touching the visual grid — often the *primary* flow for keyboard/SR users and a graceful degrade target on low-end devices (A53).
+
+| Seat state | Color (one signal only) | Non-color signal | ARIA |
+|---|---|---|---|
+| Available | green | outline + selectable shape | `aria-disabled="false"` |
+| Held (others) | amber | hatch/pattern fill + lock glyph | `aria-disabled="true"`, label "held" |
+| Sold | grey | solid fill / × glyph | `aria-disabled="true"`, label "sold" |
+| Your selection | blue | ring + checkmark | `aria-selected="true"` |
+
+Encoding state with a second, non-color signal satisfies WCAG 1.4.1 (use of color) — never red/green alone; putting that same state word into the accessible name (as above) is what makes it reach a screen-reader user in the first place, not just a low-vision sighted user.
+
+```
+Focus management in countdown/checkout:
+  - Countdown: an aria-live="polite" region, but THROTTLE it — announce at thresholds
+    (5 min, 1 min, 30 s), never every second, or the screen reader is unusable.
+  - On expiry, OR on a server-side early release (A50): move focus to the relevant
+    message ("hold expired" / "seat released"); announce assertively either way.
+  - Modals (offer, payment): focus-trap on open, return focus to the trigger on close.
+  - Respect prefers-reduced-motion → disable zoom/pan animation for those who ask.
+```
+
+**Key takeaway: scope the ARIA grid to one section at a time, encode every state with both a non-color signal and words in the accessible name (satisfying WCAG 1.4.1 for sighted and screen-reader users alike), throttle the countdown's live region, move focus on server-side early release exactly like on expiry, and always ship a text-based "find seats" path as a first-class alternative.**
+
+---
+
+### A53. Performance — load, jank, real-time cost, graceful degradation
+
+Four separate budgets — **load, interaction, network, and floor** (the worst device/network you still support) — and one framing rule: treat the static venue geometry and the dynamic status as two different problems.
+
+| Concern | Target (illustrative — verify on target devices/networks) | Lever |
+|---|---|---|
+| Initial interactive map | ~≤ 2–3 s on a mid device | Edge-served geometry + compact status, LOD-first |
+| Zoom/pan frame | 60 fps (~16 ms/frame) | Canvas/WebGL + viewport cull, work off-main-thread |
+| Real-time update cost | Only visible sections repaint | Scoped subscriptions + batched deltas (A49) |
+| Low-end floor | Still bookable | Feature-detect → fallback tiers |
+
+```
+Initial load of 80k:
+  - Venue GEOMETRY is immutable per configuration → precompute once, cache hard at the
+    edge (see ../cdn-edge/), version by layout id. Never emit 80k nodes per request.
+  - STATUS is dynamic → fetch a compact bitmap for the section(s) in view (a few
+    hundred bytes; the whole-venue figure is illustrative-only, per A32/A49) from
+    cache (see ../distributed-caching/), not 80k JSON rows.
+  - Progressive/LOD: paint the section overview first (A48), lazy-load seat detail on zoom.
+
+Avoid jank on zoom/pan:
+  - requestAnimationFrame loop; draw only culled, visible seats (A48).
+  - Offload heavy geometry/tessellation to a Web Worker; render via OffscreenCanvas
+    where available (verify support; fall back to main-thread Canvas).
+  - Cheap CSS transform during the gesture, re-raster crisp on settle; handle
+    devicePixelRatio. No per-seat DOM → no layout thrash.
+```
+
+Real-time cost reuses the scoped-subscription + batched-delta design from A49 (WebSocket primary, see [communication-protocols](../communication-protocols/)): only the visible status layer repaints on a delta, and out-of-order/duplicate deltas are dropped by seat version.
+
+```
+Degrade gracefully (decision ladder):
+  Renderer:  WebGL? → WebGL ; else Canvas2D? → Canvas ;
+             else → section list + heatmap + the "find seats" form (A52)
+  Network:   WebSocket ok? → live deltas over WS (A49)
+             WS blocked?   → SSE fallback: resync via snapshot + Last-Event-ID
+                             (Last-Event-ID is an SSE-specific resume mechanism —
+                             the WS path resyncs via its own seq/version cursor instead)
+             both blocked? → periodic poll, with a "updated Xs ago" staleness badge
+  Device/prefs: low memory / reduced-motion → disable animation, raise LOD threshold,
+                shrink the viewport delta batch.
+```
+
+On every network path the display can be stale *safely*: a hold is authorized only by the atomic write at the source of truth (A16), so degradation costs a wasted click, never an overbooking.
+
+**Named tradeoff — richness vs reach:** the WebGL live map is the best experience but not one every device can run; the tiered fallback trades visual richness for guaranteed reach (a low-end phone still books via the section list + find-seats form). You never let the fanciest tier be the only tier.
+
+**Key takeaway: split static geometry (edge-cached) from dynamic status (compact, section-scoped bitmap + scoped deltas), keep heavy work off the main thread, and feature-detect down a renderer/network/device ladder — WebSocket first, SSE with Last-Event-ID as its fallback, poll last — so a low-end phone on flaky Wi-Fi still books safely, because display staleness never authorizes a hold.**
+
+---
+
 ## Bonus — Unprompted Senior Questions
 
 ### AB1. Variable venue configurations — event-time vs venue-time schema

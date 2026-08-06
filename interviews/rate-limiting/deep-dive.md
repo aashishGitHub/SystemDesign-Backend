@@ -721,3 +721,35 @@ Emergency: global kill switch overrides all region budgets
 | Signal: payment API | fail-closed + idempotency + per-user limit |
 | Signal: social feed | rate limit fan-out writers, not only reads |
 | Signal: global system | regional budget split + async reconciliation |
+
+---
+
+## 🔁 Redundancy & Replication — how *this* system does it
+
+> Expands this system's row in the [Redundancy & Replication use-case matrix](../../fundamentals/Use_Cases_for_Redundancy_and_Replication.md) · concept depth: [key-technologies-notes.md §12](../../key-technologies-notes.md) + [sharding-replication](../sharding-replication/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **Redis Sentinel** replication for the counter store + a **local in-memory fallback** in each app node.
+- **Mode:** asynchronous.
+- **Why here:** if a Redis shard fails, local counters keep enforcing (degraded but not open) — the failure mode is *slightly-loose limits*, never *unthrottled traffic*. A deliberate availability-over-exactness call.
+
+---
+
+## 🗄️ Caching Strategy — how *this* system does it
+
+> Expands this system's row in the [Caching use-case matrix](../../fundamentals/Use_Cases_for_Caching.md) (row 10, API Rate Limiter) · concept depth: [key-technologies-notes.md §22](../../key-technologies-notes.md) + [distributed-caching](../distributed-caching/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Layers:** an in-process **L1 counter** (approximate, per-instance) → **shared Redis L2** (the coherent view, §4) → a local-only fallback path when Redis is unreachable (§7).
+- **Strategy:** **write-through by definition** — `INCR` is simultaneously the read and the write, so there is no cache-aside variant to choose. The interesting decision is how much accuracy you trade for latency: batching or sampling increments locally (§5) keeps the hot path fast and cuts Redis traffic, at the cost of briefly over-admitting traffic around the limit boundary.
+- **Invalidation:** **the TTL *is* the algorithm.** Window expiry and cache eviction are the same event — which is why the naive `INCR` followed by a separate `EXPIRE` is the canonical bug in this topic: if the process dies between the two calls, the key never expires and that caller is limited forever. The fix is a single atomic operation (a Lua script or a set-with-expiry primitive), and it's worth stating as an atomicity bug rather than a caching detail.
+- **Why here:** this is the one system in the repo where **the cache is the source of truth** — there is no origin to fall back to, because the counter exists nowhere else. That inverts the usual failure analysis: elsewhere a cache loss means "slow"; here it means "no enforcement." So the design decision §7 turns on is **fail open** (allow traffic, protect availability) versus **fail closed** (deny everyone, protect the backend) — and for a public API the answer is almost always fail open, degrading to approximate local-only limits rather than becoming an outage of your own making. Redis Sentinel (matrix row 10) plus that local fallback is what makes enforcement *approximate* rather than *absent* during a cache failure.
+
+---
+
+## 🔀 Proxies — how *this* system uses them
+
+> Expands this system's row in the [Use Cases for Proxies](../../fundamentals/Use_Cases_for_Proxies.md) matrix · concept depth: [key-technologies-notes.md §4 API Gateway / §5 Load Balancer](../../key-technologies-notes.md) + [api-design](../api-design/). ⚠️ Tech names are illustrative — verify against primary sources.
+
+- **Pattern:** **inline gateway enforcement filter** — limits evaluated **inside** the proxy (Envoy filters / NGINX Lua) *before* traffic reaches app servers.
+- **Layer:** L7 (HTTP filter).
+- **How:** every request does an **atomic counter check** in RAM/Redis; over quota → the proxy blocks and returns **HTTP 429** at the perimeter.
+- **🧭 Recall:** *count and block at the edge, before the request costs you anything.*

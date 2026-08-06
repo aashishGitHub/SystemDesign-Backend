@@ -498,3 +498,96 @@ flowchart TD
 - Storing metadata and bytes in the same system (DB for metadata, S3 for bytes).
 - Assuming one generic CDN config fits video (segments immutable/long-TTL; live playlists `no-cache`).
 - Forgetting DRM and the thundering-herd coalescing story — both are expected unprompted.
+
+---
+
+## 🎯 The One-Page Master Diagram — Everything on One Screen
+
+> **When to use:** final revision, 10 minutes before the interview. This single diagram reconstructs the whole topic. If you can narrate it end-to-end and name the tradeoff at each **red** box, you're ready. If you stall on a box, that's the section of [`deep-dive.md`](./deep-dive.md) to open.
+> Spec for this section: [`docs/instructions.md` §2.1](../../docs/instructions.md).
+
+### The central split in one sentence
+
+**The write path (upload → transcode → store) is throughput-bound, async, and minutes are fine; the read path (play → CDN → viewer) is latency-bound, read-heavy, and needs sub-2s to first frame — so they get different infrastructure, different scaling, and different failure blast radii, joined only by immutable bytes in object storage.**
+
+```mermaid
+flowchart LR
+    subgraph WRITE["WRITE PATH — throughput-bound · async · minutes OK"]
+        direction TB
+        CR(["Creator"]) -->|"1 presigned URL —<br/>bytes NEVER via app server"| RAW[("Raw blob<br/>multipart, resumable<br/><i>S3 raw-uploads/</i>")]
+        RAW -->|"2 ObjectCreated event —<br/>trust the EVENT, not the client"| WK["① Transcode workers<br/>parallel: segments × 8 renditions<br/>idempotent · checkpointed per segment<br/><i>MediaConvert / FFmpeg on Spot</i>"]
+        WK -->|"3 only NOW mark ready<br/>(uploaded ≠ streamable)"| META[("Metadata DB<br/>status · renditions · key id<br/><i>DynamoDB</i>")]
+    end
+
+    REND[("② Renditions + manifests<br/>8 qualities × ~900 segs/hr ≈ 14 GB/title<br/>immutable · lifecycle-tiered by popularity<br/><i>S3 transcoded/ = the ONLY coupling</i>")]
+
+    subgraph READ["READ PATH — latency-bound · 200M viewers · sub-2s first frame"]
+        direction TB
+        V(["Viewer"]) -->|"4 manifest + entitlement,<br/>then segments only from the edge"| CDNE{"③ CDN edge — hit ~95%<br/>segments: immutable, long TTL<br/>manifests: no-cache<br/>MISS → coalesce, fetch ONCE<br/><i>CloudFront + origin shield</i>"}
+        CDNE -->|"5 ABR: client measures bandwidth,<br/>switches rendition at segment boundary"| V
+        V -->|"6 license — content ≠ key"| DRM["License server<br/><i>KMS-backed</i>"]
+    end
+
+    subgraph TELEM["TELEMETRY — 40M writes/s · the sleeper problem"]
+        direction TB
+        STREAM[["④ Durable log<br/><i>Kinesis / MSK</i>"]] -->|"batch + aggregate<br/><i>Managed Flink</i>"| PDB[("Sharded progress<br/>LWW per user·title<br/>partition by user_id<br/><i>DynamoDB + ElastiCache</i>")]
+    end
+
+    WRITE --> REND
+    REND -->|"origin"| READ
+    READ -->|"7 progress ping every 5s —<br/>NEVER a direct DB write"| TELEM
+
+    style WRITE fill:#fed7aa,stroke:#ea580c
+    style READ fill:#dcfce7,stroke:#16a34a
+    style TELEM fill:#e0e7ff,stroke:#4338ca
+    style CDNE fill:#fee2e2,stroke:#dc2626
+    style WK fill:#fee2e2,stroke:#dc2626
+    style STREAM fill:#fee2e2,stroke:#dc2626
+    style REND fill:#dbeafe,stroke:#1d4ed8
+    style META fill:#dbeafe,stroke:#1d4ed8
+    style PDB fill:#dbeafe,stroke:#1d4ed8
+```
+
+### The 60-second narration
+
+*(one line per numbered edge)*
+
+1. **Bytes never go through my app server.** A presigned S3 multipart upload gives resumability on a 10 GB file and keeps my API out of the data path.
+2. **The pipeline is triggered by the S3 event, not the client's "I'm done" call** — that's what prevents the DB-says-uploaded/S3-has-nothing bug. A sweeper catches orphans either way. Transcoding then fans out across workers, each job idempotent and **checkpointed per segment**, so a crash re-does one segment, not the whole film.
+3. **`uploaded ≠ streamable`.** Only the worker marks the title ready, after every segment is verified — the "mark ready" write is the commit point of the whole pipeline.
+4. **The player asks metadata "is it ready, and where"**, gets the manifest hierarchy (master → variant playlists), and then talks *only* to the CDN. The read path is CDN-first, not origin-first: the same immutable bytes are requested by millions, so ~95% of requests never reach S3.
+5. **ABR is a client-side control loop** — measure throughput, switch rendition at the next segment boundary. Short segments (2–4 s) switch faster and cut live latency; long segments mean fewer HTTP requests.
+6. **DRM separates content from keys** — encrypted segments sit in the CDN, keys come from a license server backed by KMS. Never store keys next to the bytes.
+7. **Watch progress is the sleeper problem**: 40M writes/s can't touch a database directly, so it goes into a durable log, gets batched and aggregated, and lands in a sharded store where last-write-wins per (user, title) is fine — partitioned by `user_id`, not `title_id`, so a viral title can't create a hot partition.
+
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **~800 Tbps egress** | 200M viewers × 4 Mbps | This *cannot* come from origin — CDN isn't an optimization, it's the architecture. Also why push-CDN/ISP embedding exists |
+| **40M writes/s progress** | 200M viewers ÷ 5 s ping | Never a direct DB write → durable log + batch + aggregate + shard |
+| **~900 segments per hour per rendition** | 3,600 s ÷ 4 s segments | Segment size is the core tradeoff knob (switching speed & live latency vs request count) |
+| **~14 GB per full title** | 8 renditions × 900 segs × ~2 MB | × 100M titles ≈ **~1.4 EB** → tiering is mandatory, not optional |
+| **Top ~1% of titles ≈ 90% of views** | Pareto | Tier by popularity (Standard → IA → Glacier), keep the **raw original** so you can re-encode for AV1 later |
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Handling Large Blobs](../../patterns/large-blobs.md) ● | ① upload, ③ storage | Metadata through the API, **bytes never through the API**; presigned + multipart; trust the storage event, not the client |
+| [Managing Long-Running Tasks](../../patterns/long-running-tasks.md) ● | ② transcode | Accept → enqueue → worker; visibility timeout > p99 job duration; DLQ; checkpointed so retries are cheap |
+| [Scaling Reads](../../patterns/scaling-reads.md) ● | ⑤ CDN | Ladder ends at the edge: immutable versioned keys + long TTL, origin shield, request coalescing |
+| [Scaling Writes](../../patterns/scaling-writes.md) ● | ⑥ telemetry | Write **fewer** times: batch + aggregate in a stream before touching the store |
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) ○ | ②→③→④ | Pipeline state machine; the "mark ready" step is the commit point |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **Thundering herd on a new release** | 1M simultaneous cache misses stampede the origin at launch | **Request coalescing** at the edge + origin shield + jittered TTLs + **pre-warm** the top renditions before a known launch | Origin request rate vs edge request rate (hit-ratio collapse); origin p99 |
+| **Worker crashes mid-transcode** | Title stuck "processing" forever, or a partial rendition published as complete | Idempotent, **checkpointed per segment**; visibility timeout > p99; DLQ + sweeper; publish only after all segments verified | **Age** of oldest job in non-terminal state — a dead worker pool emits zero errors |
+| **Progress-write hot partition** | One viral title's writes concentrate on a single partition and throttle | Partition by `user_id` (not `title_id`); write-shard suffix for hot keys; absorb in the log and aggregate before the store | Per-partition throttle metrics; consumer lag / backlog **age** on the stream |
+
+### If you only remember one thing
+
+> **Two paths, one coupling: throughput-bound async writes and latency-bound CDN-served reads meet only at immutable bytes in object storage — and the number that decides everything is 800 Tbps of egress, which is why the CDN *is* the design and the origin is just durable backup.**
