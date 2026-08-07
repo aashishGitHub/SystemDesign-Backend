@@ -43,6 +43,7 @@
 | `questions.md` | 38 interview questions across 8 levels + bonus senior questions | ~250 |
 | `answers.md` | Full answers with TypeScript code, ASCII architecture, cheat sheet | ~1100 |
 | `deep-dive.md` | 8 deep-dive sections: analogy + code + failure modes per topic | ~1300 |
+| `diagrams.md` | **🎯 One-page master diagram** — the one to draw in the interview, plus narration, key numbers, patterns and failure modes | ~121 |
 
 ---
 

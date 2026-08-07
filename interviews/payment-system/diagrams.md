@@ -655,3 +655,18 @@ flowchart LR
 ### If you only remember one thing
 
 > **A timeout is an UNKNOWN, not a failure — so the whole design is: dedupe in the database transaction, record every movement as an append-only balanced pair, and reconcile against the outside world continuously. Exact inside, defensive at the boundary.**
+
+### The AWS-specific traps to name unprompted
+
+> Each row is a place where the obvious AWS choice is wrong *for a money system*. All quotas are order-of-magnitude planning numbers to **⚠️ verify against current docs** — see [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **QLDB — do not lead with it** **⚠️ verify** | The "ledger database" name makes it the tempting answer, and AWS has announced end-of-support | *"I wouldn't lead with QLDB. An append-only double-entry schema in Aurora Postgres gives me the same guarantees with a hash chain for tamper-evidence, and no bet on a product's lifecycle."* |
+| **The idempotency key must be `UNIQUE` *inside* the money transaction** | A DynamoDB conditional put in a *separate* service leaves a window where the loser still reaches the PSP | *"Either a `UNIQUE` constraint in the same Aurora transaction as the ledger write, or a DynamoDB conditional put that gates the PSP call — but the dedupe and the money must commit together, not adjacently."* |
+| **Step Functions Standard vs Express** | Express is cheaper and loses the durability you need | *"Standard for the payment state machine — I need durable execution history and exact replay for an `INDETERMINATE` charge. Express is for high-volume short flows, not money."* |
+| **SQS visibility timeout vs webhook processing** | Timeout below p99 ⇒ the same webhook processed twice | *"Visibility above p99, and the handler dedupes on provider event id anyway — at-least-once is the only delivery I get."* |
+| **API Gateway integration timeout** (~29 s historically) **⚠️ verify** | A slow PSP authorize can exceed it, and the client sees a timeout while the charge proceeds | *"That's exactly the ambiguous case: the client's timeout is not the charge's outcome. Same idempotency key on retry, or query by key — never re-charge."* |
+| **Aurora replica lag on the receipt read** | Customer refreshes and sees no payment | *"The payer's own post-payment reads go to the writer; replicas serve everyone else."* |
+| **Secrets Manager + KMS are the boundary, not the security model** | PCI scope creep | *"The card never reaches my servers (PSP iframe tokenizes it); KMS/Secrets Manager protect *my* keys and credentials — they don't put me in or out of PCI scope."* |
+| **AWS gives you no reconciliation and no sweeper** | Both are load-bearing here | *"The three-way reconciliation job and the sweeper that re-drives `IN_FLIGHT`/`INDETERMINATE` by **age** are mine to build — nothing notices a stuck payment for me."* |

@@ -35,6 +35,7 @@
 | [questions.md](./questions.md) | 38 structured questions (8 levels + bonus QB). Attempt cold first. |
 | [answers.md](./answers.md) | Every answer with code/config or a comparison table, named tradeoffs, real tools, cheat sheet. |
 | [deep-dive.md](./deep-dive.md) | Beginner → Architect depth, real-world implementations, incident patterns, chaos, cheat sheet. |
+| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its 60-second narration, the numbers that justify it, the patterns it assembles, and the three things that break. Authored last, revised from first. |
 
 ---
 

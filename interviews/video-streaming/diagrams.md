@@ -591,3 +591,19 @@ flowchart LR
 ### If you only remember one thing
 
 > **Two paths, one coupling: throughput-bound async writes and latency-bound CDN-served reads meet only at immutable bytes in object storage — and the number that decides everything is 800 Tbps of egress, which is why the CDN *is* the design and the origin is just durable backup.**
+
+### The AWS-specific traps to name unprompted
+
+> Each row is a place where the obvious AWS choice is wrong *at this egress scale*. All quotas are order-of-magnitude planning numbers to **⚠️ verify against current docs** — see [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **Egress cost dominates everything** | 800 Tbps through a commercial CDN is the single largest line item in the system | *"This is why Netflix built Open Connect and embeds appliances inside ISPs — at this scale you stop buying CDN bandwidth and start placing hardware. CloudFront is my baseline, not my endgame."* |
+| **S3 request rate is per prefix** (~5,500 GET **⚠️ verify**) | Segments are millions of small objects | *"Hash-spread the segment key prefixes; a per-title or per-date prefix becomes the hotspot on a popular release."* |
+| **Lambda runtime ceiling rules out transcoding** **⚠️ verify** | Transcoding is minutes-to-hours of CPU | *"MediaConvert, or my own FFmpeg fleet on Spot for cost at scale — Lambda is for the event glue that *triggers* the job, never the job."* |
+| **SQS visibility timeout vs a 4-minute transcode** | Timeout below job duration ⇒ the same segment transcodes twice | *"Visibility above p99 with heartbeat extension, `maxReceiveCount` → DLQ, and the worker is idempotent by output key anyway."* |
+| **Trust the S3 event, not the client's "upload done"** | The classic state-sync bug: DB says `UPLOADED`, S3 has nothing | *"S3 Event Notification → SQS drives the pipeline, plus a sweeper for orphaned multipart uploads — and a lifecycle rule to abort them so I'm not paying for invisible bytes."* |
+| **CloudFront invalidation is slow and rate-limited** | Manifests change; segments never should | *"Segments are immutable with long TTLs; only the live manifest gets a short TTL. I never design around invalidation."* |
+| **Signed URLs vs signed cookies** | Per-segment auth would be brutal | *"Signed cookies for a whole playback session path, since a session fetches hundreds of segments — signed URLs per object would mean signing every segment."* |
+| **Kinesis per-shard limits for 40M writes/s of progress** | One shard cannot hold it, and a hot key stalls a shard | *"Partition by `user_id`, aggregate in Managed Flink windows, then write rollups — never a direct DB write per ping, and never a single hot partition key."* |
+| **Glacier retrieval tiers are not interchangeable** | Cold titles still get watched occasionally | *"Instant Retrieval where I need millisecond reads on the long tail; Flexible/Deep only for the raw originals I keep for future re-encodes."* |

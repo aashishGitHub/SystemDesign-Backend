@@ -43,6 +43,7 @@
 | `questions.md` | 38 interview questions across 8 levels + 3 bonus unprompted questions | ~230 |
 | `answers.md` | Full answers with TypeScript code, comparison tables, pipeline diagrams, cheat sheet | ~900 |
 | `deep-dive.md` | 8 deep-dive sections at 3 depths (beginner/senior/architect) + capacity math + cheat sheet | ~1100 |
+| `diagrams.md` | **🎯 One-page master diagram** — the one to draw in the interview, plus narration, key numbers, patterns and failure modes | ~117 |
 
 ---
 

@@ -486,9 +486,15 @@ sequenceDiagram
 
 ---
 
-## Diagram 13 — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
 
-> **When to use:** this is the single whiteboard diagram to reproduce from memory. It folds the three paths, all actors, every datastore **labeled with its type**, the async backbone, and the dispatch loop into one picture. Draw it in the numbered order below and narrate each stroke. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+> **When to use:** final revision, 10 minutes before the interview — and the single whiteboard diagram to reproduce from memory. It folds the three paths, all actors, every datastore **labeled with its type**, the async backbone, and the dispatch loop into one picture. Draw it in the numbered order below and narrate each stroke. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults**; every quota is an order-of-magnitude planning number to **verify against current docs**.
+
+### The central split in one sentence
+
+**Three paths with three different physics — browse (~90% of traffic, cacheable, eventual), order (small volume but zero tolerance for oversell or double-charge), and track (125K location writes/s and millions of live connections, entirely ephemeral) — glued by an event bus, with dispatch that is *prep-aware* because assigning a courier too early is as wrong as too late.**
 
 ```mermaid
 flowchart TD
@@ -560,7 +566,10 @@ flowchart TD
 | Event backbone / outbox relay | **Log / stream** | Kafka | Replayable, many consumer groups, absorbs spikes |
 | Serviceability / matching | **Geospatial index** | S2 / H3 | Cell lookup instead of full scan |
 
-**Draw it in this order (and what to say):**
+### The 60-second narration
+
+*(one line per numbered box — draw it in this order and say this)*
+
 1. **Three actors** (customer, restaurant, courier) — "3-sided marketplace; the restaurant is a first-class actor."
 2. **Gateway** — "auth, rate-limit, routing — one front door."
 3. **Browse path (blue)** — "~90% of traffic, eventual, served from cache/CDN + search; DB touched rarely."
@@ -569,7 +578,50 @@ flowchart TD
 6. **Track path (orange)** — "the real scale problem: 125K GPS writes/s to an ephemeral TTL store, ~3M live connections fanned out via pub/sub — kept off the order DB."
 7. **Dispatch loop** — "prep-aware JIT: assign the courier to arrive when the food is ready; the prep-time estimate is the linchpin."
 
-**One-line thesis to close:** *"Three paths, three store types — cache for browse, ACID for order, ephemeral geo for track — glued by an event bus so failures compensate and spikes buffer."*
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **125K location writes/s** | 500K couriers ÷ one GPS ping per 4 s | The real scale problem. An ephemeral, geo-bucketed in-memory store with a short TTL — never the order database. A lost ping is replaced 4 s later, so there is nothing to recover |
+| **~3M concurrent tracking connections** | Little's Law: arrival rate × duration (~40 min average delivery) | Sizes the WebSocket fleet (~30 nodes at ~100K each, illustrative) and makes "polling" structurally impossible |
+| **~1,200 orders/s peak** (~230/s avg) | 20M orders/day ÷ 86,400, dinner-rush peak ~5× | Order volume is *small* for a database — so orders are a **correctness** problem, not a scale problem. Spend the budget on the guarded decrement and idempotency |
+| **~90% of traffic is browse** | views per order at typical conversion | Cache and CDN the menu path hard, keyed by menu **version**; the source of truth is touched rarely |
+| **dispatch_at = ready_at − travel_time** | prep-time estimate + ETA | The linchpin equation. Dispatch too early and the courier waits; too late and the food goes cold — so prep-time accuracy is the single most valuable number in the system |
+
+*(All figures order-of-magnitude — verify against your own load tests.)*
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Scaling Writes](../../patterns/scaling-writes.md) **●** | ⑥ track | 125K w/s absorbed by an ephemeral TTL store, geo-bucketed by cell, sharded by metro |
+| [Real-Time Updates](../../patterns/realtime-updates.md) **●** | ⑥ tracking | Hop 1 WebSocket; hop 2 (reach the node holding the socket) via a pub/sub backplane + registry; throttle to one update per 2–4 s |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) **●** | ④ order | Rung 1 — guarded conditional decrement on the item row; zero rows = sold out |
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) **●** | ④⑤⑦ | Saga: reserve → authorize → create → notify; compensations on restaurant rejection; outbox so order + event are atomic |
+| [Scaling Reads](../../patterns/scaling-reads.md) ○ | ③ browse | CDN + Redis by menu version, search in a CDC-fed index |
+| Gap: proximity/geospatial search | ②③ serviceability | S2/H3 cell lookup instead of a radius scan — cell size *is* the design decision |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **A tracking gateway dies** | ~100K clients reconnect at once — a thundering herd against the remaining fleet | Jittered exponential backoff on the client, sticky routing by `order_id`, resume from last known position rather than replaying | Reconnect-rate spike; connection-count cliff; position-age p99 on the customer's map |
+| **Restaurant rejects (or never accepts) a paid order** | The customer has already entered a card for food nobody will make | **Authorize, don't capture**, at checkout; on rejection or timeout, void the authorization and release the stock — capture only on accept | Accept-rate and time-to-accept per restaurant; count of voided authorizations; orders stuck in `PENDING_ACCEPT` past a threshold (alert on **age**) |
+| **Prep-time estimate is wrong** | Couriers idle in lobbies (cost) or food sits going cold (quality) — the core product failure | Per-restaurant, per-hour learned prep model with a safety buffer; re-dispatch if `ready_at` moves; keep a manual override for the restaurant | Courier wait-at-restaurant distribution; food-ready-to-pickup gap; prediction error vs actual, tracked per restaurant |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **DynamoDB per-partition ceiling** (~1,000 WCU **⚠️ verify**) | A dense downtown geo-cell at dinner time is one hot key | *"Finer cell resolution there, or a write-sharded key suffix with scatter-gather on read."* |
+| **API Gateway WebSocket is per-message priced** | ~3M sockets each getting a position every few seconds | *"Self-managed WebSocket on an NLB plus a connection registry — at this message volume it's materially cheaper."* |
+| **Kinesis per-shard head-of-line blocking** | One poison location record stalls a whole metro's positions | *"Per-shard retry + side-channel DLQ; partition by city so the blast radius is one metro."* |
+| **DynamoDB TTL is not a timer** (~48 h best-effort **⚠️ verify**) | The restaurant-accept timeout is product logic | *"TTL expires stale locations; the accept timeout needs a real scheduler or a sweeper."* |
+| **SQS visibility timeout vs job duration** | A slow dispatch job runs twice | *"Visibility above p99, heartbeat-extend for long jobs, and the handler is idempotent anyway."* |
+
+### If you only remember one thing
+
+> **Three paths, three store types — cache for browse, ACID for order, ephemeral geo for track — glued by an event bus so failures compensate and spikes buffer; and dispatch is prep-aware, because `dispatch_at = ready_at − travel_time` is the equation the whole courier economy runs on.**
 
 ---
 

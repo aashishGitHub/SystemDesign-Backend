@@ -452,3 +452,120 @@ flowchart TD
 - Matching on stale/teleported locations — validate max speed and evict on a staleness timeout.
 - Letting surge oscillate — you need smoothing, hysteresis, cooldown, and a committed rider price.
 - Replicating ephemeral location data across regions — rides are intra-region; keep it local.
+
+---
+
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** final revision, 10 minutes before the interview — and the single diagram to reproduce on the whiteboard. If you can narrate it end-to-end and name the tradeoff at each **red** box, you're ready. Stall on a box → that's the [deep-dive.md](./deep-dive.md) section to open.
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults, not gospel**; every quota is an order-of-magnitude planning number to **verify against current docs**.
+
+### The central split in one sentence
+
+**Three planes with three different physics — location ingest (250K writes/s, ephemeral, lose-it-and-shrug), matching (latency-bound: a cell lookup plus a scoring function, never a distance scan), and trip + tracking (durable money state plus a real-time push channel) — and mixing any two of them into one datastore is the mistake.**
+
+```mermaid
+flowchart LR
+    DRV(["Driver app<br/>1M active"])
+    RID(["Rider app"])
+
+    subgraph INGEST["① LOCATION PLANE — 250K w/s · EPHEMERAL"]
+        direction TB
+        ING["ingest · shard by city<br/>Kinesis / MSK"]
+        GEO[("② cell index: H3/S2/geohash<br/>ElastiCache GEO or DynamoDB<br/>TTL · offline after 30s stale")]
+        ING --> GEO
+    end
+
+    subgraph MATCH["MATCHING PLANE — latency-bound · &lt; 1s"]
+        direction TB
+        CAND["③ candidates = rider cell<br/>+ 8 neighbours (the EDGE problem)"]
+        SCORE["④ score, don't sort by distance<br/>ETA + heading + rating + vehicle"]
+        OFFER{"⑤ SERIAL OFFER + accept CAS<br/>one driver at a time · 15s REAL timer<br/>exactly one accept wins"}
+        CAND --> SCORE --> OFFER
+    end
+
+    subgraph TRIP["TRIP PLANE — DURABLE · money"]
+        direction TB
+        SM["⑥ REQUESTED→MATCHED→ARRIVED<br/>→IN_PROGRESS→COMPLETED→PAID<br/>Step Functions · Aurora"]
+        DB[("trips · fares · receipts<br/>Aurora Postgres<br/>COMPLETED ≠ PAID")]
+        SM --> DB
+    end
+
+    WS["⑦ live tracking · per-RIDE topic<br/>WS on NLB + pub/sub registry<br/>hop 2 is the real problem"]
+    SURGE["⑧ surge per H3 cell, every 30s<br/>smoothing + hysteresis + cooldown<br/>price COMMITTED at request"]
+
+    DRV -->|"GPS every 4s"| ING
+    RID -->|"request"| CAND
+    OFFER -->|"accepted"| SM
+    OFFER -.->|"timeout → next candidate"| SCORE
+    GEO -.->|"who is nearby"| CAND
+    DB -.->|"events"| SURGE
+    SM --> WS
+    WS -.->|"driver position"| RID
+
+    style INGEST fill:#fed7aa,stroke:#ea580c
+    style MATCH fill:#fef9c3,stroke:#ca8a04
+    style TRIP fill:#dbeafe,stroke:#1d4ed8
+    style DB fill:#dbeafe,stroke:#1d4ed8
+    style WS fill:#dcfce7,stroke:#16a34a
+    style SURGE fill:#e0e7ff,stroke:#4338ca
+    style GEO fill:#fee2e2,stroke:#dc2626
+    style OFFER fill:#fee2e2,stroke:#dc2626
+```
+
+### The 60-second narration
+
+*(one line per numbered box ①–⑧)*
+
+1. **The firehose comes first, because it sets the whole shape.** 1M drivers × one ping per 4 s = **250K writes/s**. That never touches the trip database — it lands on a partitioned stream, sharded by city, because rides are intra-region.
+2. **The index is a cell index, not a coordinate scan.** Geohash, S2 or Uber's H3, in an in-memory store with a TTL, so a driver who stops reporting simply ages out — offline after ~30 s of silence. The data is *ephemeral by design*: a lost ping is replaced 4 seconds later, so there is nothing to recover.
+3. **A rider request becomes a cell lookup plus its 8 neighbours.** The neighbour ring is not optional — querying only the rider's own cell misses a driver 50 metres away across the boundary. That's the **edge problem**, and naming it unprompted is a senior signal.
+4. **Then I score, I don't sort.** Nearest is not best: a driver pointed the wrong way down a one-way street, or with a poor acceptance rate, or the wrong vehicle class, loses to a slightly further one. ETA + heading + rating + vehicle type as a scoring function.
+5. **This red diamond is the correctness core: serial offers with a real timer, and an accept that is a compare-and-set.** One driver at a time, ~15 s to respond, then the offer moves on. Broadcasting to everyone nearby causes a race and double-assignment; the accept must be a conditional write so **exactly one driver can win a ride**.
+6. **The trip is the durable plane** — an explicit state machine, and `COMPLETED` is deliberately *not* `PAID`, because a card can fail after the rider is already home.
+7. **Tracking is a push channel scoped per ride.** Hop 1 is the WebSocket; hop 2 — getting the position to the server holding that rider's socket — is the actual problem, solved with a per-ride pub/sub topic and a connection registry.
+8. **Surge is a batch job on the same cell grid**, recomputed about every 30 s with smoothing, hysteresis and a cooldown, and the price is **committed at request time** so it cannot jump under the rider mid-flow.
+
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **250K location writes/s** | 1M active drivers ÷ 4 s | An in-memory, TTL'd, cell-indexed store. A relational primary fsync'ing this melts; this is the single number that forces the three-plane split |
+| **~1,000 ride requests/s peak** (~116/s avg) | 10M rides/day ÷ 86,400, peaked | Matching is a **latency** problem (< 1 s), not a throughput one — so spend the design effort on the cell query and scoring, not on sharding the request path |
+| **< 1 s match** | stated SLA | Rules out any scan: cell + 8 neighbours is O(1)-ish; a `WHERE distance() < 2km` scan over 1M rows cannot hold this |
+| **~50K WebSocket connections/server** (illustrative planning figure — verify) | concurrent trips ÷ per-server ceiling | Sizes the tracking fleet, and tells you a gateway crash reconnects ~50K clients at once → jittered backoff is mandatory |
+| **30 s staleness / 30 s surge window** | 4 s ping cadence × safety margin | Defines "offline" and the surge recompute cadence — both are TTL/batch decisions, not real-time ones |
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Scaling Writes](../../patterns/scaling-writes.md) **●** | ①② ingest | Absorb in a partitioned stream, shard by city, write to an ephemeral TTL store — never the durable DB |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) **●** | ⑤ accept | Rung 1 — a **conditional write** so exactly one driver wins; serial offers keep contention near zero in the first place |
+| [Real-Time Updates](../../patterns/realtime-updates.md) **●** | ⑦ tracking | Hop 1 WebSocket, hop 2 per-ride pub/sub + connection registry |
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) **●** | ⑥ trip lifecycle | Explicit state machine; `COMPLETED` → `PAID` is a separate step with its own failure path |
+| [Scaling Reads](../../patterns/scaling-reads.md) ○ | ③ candidate query | The cell index *is* the read optimization — precomputed buckets instead of a scan |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **A dense downtown cell becomes a hot partition** | Writes throttle on one key while the rest of the fleet idles; matching in the busiest place degrades first | Finer cell resolution there, or a write-sharded key suffix with scatter-gather on read; shard the stream by city so one metro can't starve another | Per-partition throttle/error rate; location-lag p99 **per cell**, not global |
+| **Driver never answers the offer** | Rider waits, staring at a spinner — the worst UX in the product | Bounded ~15 s offer with a **real timer** (not a TTL), then move to the next candidate; cap total attempts and surface a fallback | Offer-accept rate; time-to-match p99; count of rides exhausting the candidate list |
+| **A tracking gateway dies** | ~50K riders/drivers reconnect simultaneously — a thundering herd against the gateway fleet | Jittered exponential backoff on the client, sticky routing by `ride_id`, resume from last known position rather than replaying history | Reconnect-rate spike; connection-count cliff; p99 of position age on the rider's map |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **DynamoDB per-partition ceiling** (~1,000 WCU **⚠️ verify**) | A geohash cell as the partition key makes downtown-at-6pm a hot key regardless of table capacity | *"I'd shard the hot cell key with a suffix and scatter-gather, or drop to a finer H3 resolution there — adaptive capacity helps but doesn't remove the ceiling."* |
+| **DynamoDB TTL is not a timer** (best-effort, ~48 h **⚠️ verify**) | The 15-second offer timeout is load-bearing product logic | *"TTL is cleanup for stale locations. The offer timeout needs a real scheduler or a sorted-set sweeper."* |
+| **Kinesis per-shard head-of-line blocking** | One poison GPS record stalls that shard's consumer, so a whole city's positions go stale | *"Per-shard retry plus a side-channel DLQ; and I partition by city so the blast radius is one metro."* |
+| **API Gateway WebSocket is per-message priced** | Position pushes are continuous for the whole trip | *"Self-managed WebSocket on an NLB with an ElastiCache connection registry — cheaper at this message volume."* |
+| **`GEORADIUS` is legacy vs `GEOSEARCH`** **⚠️ verify** | Easy to name the outdated command and get corrected | *"Redis `GEOSEARCH` on ElastiCache — I'd verify the current command in the docs."* |
+| **Global Tables are last-writer-wins** | Trip and fare state cannot silently converge | *"Rides are intra-region: city/region owns its own writes. I don't replicate ephemeral location data across regions at all."* |
+
+### If you only remember one thing
+
+> **Three planes, three physics: 250K writes/s of throwaway location data in an ephemeral cell-indexed store, a sub-second match that is a cell lookup plus a scoring function (never a distance scan), and a durable trip state machine where `COMPLETED` is not `PAID` — with a serial offer plus a conditional accept so exactly one driver can ever win a ride.**

@@ -412,9 +412,15 @@ flowchart TB
 
 ---
 
-## THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
 
-> **When to use:** the single whiteboard diagram to reproduce from memory. It folds the **consistency gradient** — browse → cart → checkout → fulfillment — into one picture with every datastore **labeled by type**, plus the outbox + Kafka async backbone. Draw left→right (consistency rising) and narrate each stage. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+> **When to use:** final revision, 10 minutes before the interview — and the single whiteboard diagram to reproduce from memory. It folds the **consistency gradient** — browse → cart → checkout → fulfillment — into one picture with every datastore **labeled by type**, plus the outbox + Kafka async backbone. Draw it top→down (consistency rising) and narrate each stage. Pairs with [radio-walkthrough.md](./radio-walkthrough.md).
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults**; every quota is an order-of-magnitude planning number to **verify against current docs**.
+
+### The central split in one sentence
+
+**E-commerce is not one system but a *consistency gradient*: as the shopper moves toward the money, required consistency rises and tolerable staleness falls — browse is eventual (cache it hard), cart is availability-first (never reject a write), checkout is strongly consistent (never oversell, never double-charge), fulfillment is async (a spike becomes a backlog) — and each stage is a different CAP point demanding different infrastructure.**
 
 ```mermaid
 flowchart TD
@@ -484,13 +490,59 @@ flowchart TD
 | Product search | **Inverted index** | Elasticsearch | Faceted/fuzzy; CDC-fed, not the source of truth |
 | Event backbone / outbox relay | **Log / stream** | Kafka | Replayable; turns a Prime-Day spike into a backlog |
 
-**Draw it in this order (and what to say):**
-1. **Shopper + edge** — "CDN and gateway first; most traffic dies at the edge."
-2. **Browse (blue)** — "eventual consistency; a stale price is a UX blemish, so cache/CDN + replicas + search."
-3. **Cart (purple)** — "availability-first: a rejected add-to-cart is lost money → AP KV, merge later."
-4. **Checkout (green)** — "strong consistency: guarded decrement = no oversell, idempotency key = no double-charge; authorize the card here."
-5. **Kafka** — "order + event committed in one txn via outbox; async from here."
-6. **Fulfillment (orange)** — "consumer allocates warehouse and ships; capture on ship. A spike is a backlog, not a checkout meltdown."
-7. Arrow the gradient across the top: **eventual → AP → strong → async**.
+### The 60-second narration
 
-**One-line thesis to close:** *"E-commerce is a consistency gradient: cache the browse path, keep the cart always-writable, make checkout strongly consistent, and run fulfillment async — four CAP points, four store types, one event bus."*
+*(one line per numbered box — draw it in this order and say this)*
+
+1. **Shopper + edge** — "CDN and gateway first; most traffic dies at the edge and never reaches an origin."
+2. **Browse (blue)** — "eventual consistency. A stale price or stock badge is a UX blemish, not a correctness bug, so this is CDN + Redis + read replicas, with search in a CDC-fed inverted index. The product body is keyed by an **immutable version**, so a price change is a new key rather than an invalidation."
+3. **Cart (purple)** — "availability-first, and this is the canonical AP subsystem — a rejected add-to-cart is *directly lost revenue*, so I take an always-writable KV store and merge concurrent versions later (add-wins union, tombstones for deletes)."
+4. **Checkout (green)** — "strong consistency, and only two mechanisms matter: a **guarded conditional decrement** (`WHERE (on_hand - reserved) >= qty`; zero rows means sold out) is the *only* real oversell guard, and an **idempotency key** unique on the order row and passed to the PSP is the *only* exactly-once mechanism. The stock badge upstairs is a hint, never the guard. Authorize the card here — don't capture."
+5. **Kafka via the outbox** — "the order row and its `OrderPlaced` event commit in **one local transaction**, then a relay publishes. That's why the event can never be lost or orphaned relative to the order — no dual write."
+6. **Fulfillment (orange)** — "an async consumer allocates a warehouse and ships, and **captures the payment on ship**. Because it's a consumer, a Prime-Day spike becomes a durable backlog while checkout keeps committing — the spike does not melt the buy button."
+7. **Arrow the gradient across the top: eventual → AP → strong → async.** That arrow *is* the answer to this question.
+
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **Reads dominate ~1000:1** | ~30–50 product views per order at ~2–3% conversion | Spend the *scale* budget on the browse path (CDN → Redis → replicas) and the *correctness* budget on the tiny write path. This ratio is the whole architecture in one figure |
+| **~230 orders/s avg, ~10⁴/s Prime-Day peak** | 20M orders/day ÷ 86,400, peaked ~50× | Order throughput is genuinely small — a single ACID writer handles the average. The peak is absorbed by queueing fulfillment, not by sharding checkout |
+| **~9K product views/s avg → ~10⁶/s peak** | ~40 views/order × order rate | This is what actually needs horizontal scale, and it's all cacheable by immutable version |
+| **~10⁸–10⁹ SKUs** | marketplace-scale catalog | Rules out any full-scan search; forces a CDC-fed inverted index as a *derived* store |
+| **p99 < ~100–200 ms product page, globally** | stated guarantee | Edge-terminated reads; the origin is never on the critical path for a cache hit |
+
+*(All figures order-of-magnitude — verify against primary sources.)*
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Scaling Reads](../../patterns/scaling-reads.md) **●** | ②③ browse | CDN → Redis → read replicas; immutable version keys; volatile price/stock overlaid separately from the cached body |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) **●** | ⑤ checkout | Rung 1 — guarded conditional decrement; TTL hold for a hot SKU; the badge is never the guard |
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) **●** | ⑤⑥⑦ | Saga with compensations (release-stock ↔ reserve, void-auth ↔ authorize) + transactional outbox; orchestrated for the money path |
+| [Scaling Writes](../../patterns/scaling-writes.md) ○ | ④ cart, ⑥ fulfillment | AP KV for always-writable carts; queue-absorbed fulfillment so peak ≠ peak load on the DB |
+| [Long-Running Tasks](../../patterns/long-running-tasks.md) ○ | ⑥ | Async consumer + DLQ; capture-on-ship is a later step, not a blocking one |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **Two shoppers buy the last unit** | Oversell → cancel-and-apologize, or a physical shortfall. The badge said "2 left" for both of them | The **guarded decrement** is the only guard: zero rows updated = sold out. For a hot drop SKU, add a short TTL hold at checkout start and gate demand upstream (rate-limit + queue) | Oversell counter — this is a **correctness alarm and must sit at ≈ 0**; conditional-update conflict rate on hot SKUs |
+| **Double-click / client retry on Place Order** | Two orders, two charges, one angry customer and a chargeback | Idempotency key `UNIQUE` on the order row **inside** the same transaction, and the same key passed to the PSP; the retry returns the *first* order | Duplicate-suppressed count; PSP-side duplicate rejections; orders-per-idempotency-key > 1 (must be zero) |
+| **Prime-Day spike (10–50×)** | A synchronous fulfillment chain drags checkout down with it — you stop taking money at exactly the wrong moment | Fulfillment is a Kafka consumer, so the spike is a **backlog**; orders keep committing. Shed load at the edge, and never call warehouse/shipping synchronously from checkout | Consumer lag (backlog is fine, *growing unboundedly* is not); checkout success rate; add-to-cart success rate ≈ 100% |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **DynamoDB Streams *is* the outbox** | Most candidates hand-roll a relay | *"On DynamoDB I don't dual-write — Streams is a log-based outbox for free. On Aurora it's an outbox table plus a relay."* |
+| **Aurora replica lag breaks read-your-writes** | "My orders" page is empty right after checkout | *"Route the buyer's own post-purchase reads to the writer, or carry a session token — replicas for everyone else."* |
+| **CloudFront invalidation is slow and rate-limited** | Price/stock changes constantly | *"Versioned immutable keys with long TTLs and a short-TTL overlay for price/availability — I invalidate almost never."* |
+| **DynamoDB per-partition ceiling** (~1,000 WCU **⚠️ verify**) | A single viral SKU is one hot key | *"Write-shard the hot SKU key with a suffix and scatter-gather, or move that counter to a serialized path."* |
+| **Provisioned vs on-demand capacity** | Prime Day blows through provisioned tables | *"On-demand for the spiky unknown, provisioned + autoscaling once the shape is known — and pre-scale before a known event rather than discovering it live."* |
+| **No exactly-once, no cross-service transaction** | Both are assumed by naive designs | *"Exactly-once is at-least-once plus a UNIQUE idempotency key; across services it's a saga with compensations, never 2PC."* |
+
+### If you only remember one thing
+
+> **E-commerce is a consistency gradient: cache the browse path (eventual), keep the cart always-writable (AP), make checkout strongly consistent with a guarded decrement plus an idempotency key (CP), and run fulfillment as an async consumer so a spike becomes a backlog instead of a meltdown — four CAP points, four store types, one event bus.**

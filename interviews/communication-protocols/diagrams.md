@@ -496,3 +496,120 @@ sequenceDiagram
 - Duplicates come from **network loss + retries**; defend with idempotent operations, dedup on message ID, and exactly-once-style patterns (Q43).
 - **Contract evolution** shares one principle across REST versioning, gRPC protobuf field numbers, and a Kafka Schema Registry: never break existing readers — add, don't reuse/remove (QB2).
 - **The Kafka trap (QB5):** Kafka is the wrong tool for request/response, low-volume task routing, or when you need per-message ack/DLQ semantics — you lose simplicity and pay operational cost.
+
+---
+
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** final revision, 10 minutes before the interview. This topic is a **decision harness** rather than one architecture — so the master diagram is the decision tree you walk when an interviewer says "how should these two services talk?", with the reliability spine underneath it. If you can walk it end-to-end and name the trap at each **red** box, you're ready.
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults**; every quota is an order-of-magnitude planning number to **verify against current docs**.
+
+### The central split in one sentence
+
+**Decide *synchronous vs asynchronous* first — that is a coupling decision, not a technology one — and only then pick the contract style (REST / gRPC / GraphQL) or the async shape (per-message retry vs ordered replayable log vs fan-out vs content routing); and because exactly-once delivery does not exist across a network, every choice is at-least-once delivery plus an idempotent consumer.**
+
+```mermaid
+flowchart TB
+    Q(["Service A must reach Service B"])
+    SPLIT{"① SYNC or ASYNC?<br/>does the caller need the answer<br/>to continue RIGHT NOW?"}
+
+    subgraph SYNCP["② SYNC — temporal coupling: B down = A degraded"]
+        direction TB
+        REST["REST/HTTP<br/>public, cacheable, universal<br/>ETag + conditional GET"]
+        GRPC["gRPC over HTTP/2<br/>internal, typed, streaming<br/>4 modes · protobuf field numbers"]
+        GQL["GraphQL<br/>client picks fields<br/>⚠️ N+1 → DataLoader batching"]
+    end
+
+    subgraph ASYNCP["③ ASYNC — broker buffers; decoupled in time"]
+        direction TB
+        RETRY{"④ per-message retry<br/>OR ordered replay?"}
+        QUEUE["QUEUE — consume & delete<br/>visibility timeout → DLQ<br/>SQS · RabbitMQ"]
+        LOG["LOG — retained, replayable<br/>order per partition KEY<br/>Kafka/MSK · Kinesis"]
+        FAN["FAN-OUT / ROUTING<br/>SNS (cheap) · EventBridge<br/>(content rules + replay)"]
+        RETRY -->|"per message"| QUEUE
+        RETRY -->|"ordering + replay"| LOG
+        RETRY -->|"1 event → N consumers"| FAN
+    end
+
+    PUSH{"⑤ pushing to a CLIENT?<br/>WS (duplex) · SSE (one-way<br/>+ auto-reconnect) · poll (fallback)"}
+    REL["⑥ RELIABILITY SPINE<br/>exactly-once does NOT exist →<br/>at-least-once + idempotency key<br/>+ dedupe store"]
+    BP["⑦ BACKPRESSURE, per transport<br/>gRPC: HTTP/2 flow control · Kafka: consumer lag<br/>REST: 429 · WS: you build it"]
+    EVO["⑧ CONTRACT EVOLUTION<br/>add, don't mutate · default, don't require<br/>deprecate, don't delete · never reuse a field number"]
+
+    Q --> SPLIT
+    SPLIT -->|"yes, now"| SYNCP
+    SPLIT -->|"no, eventually"| RETRY
+    SYNCP --> PUSH
+    ASYNCP --> REL
+    SYNCP --> REL
+    REL --> BP --> EVO
+
+    style SYNCP fill:#dcfce7,stroke:#16a34a
+    style ASYNCP fill:#fed7aa,stroke:#ea580c
+    style LOG fill:#fed7aa,stroke:#ea580c
+    style QUEUE fill:#fed7aa,stroke:#ea580c
+    style PUSH fill:#dbeafe,stroke:#1d4ed8
+    style EVO fill:#e0e7ff,stroke:#4338ca
+    style SPLIT fill:#fee2e2,stroke:#dc2626
+    style RETRY fill:#fee2e2,stroke:#dc2626
+    style REL fill:#fee2e2,stroke:#dc2626
+```
+
+### The 60-second narration
+
+*(one line per numbered box ①–⑧)*
+
+1. **The first cut is sync vs async, and it is a *coupling* decision.** Ask one question: does the caller need the answer to continue right now? Synchronous means temporal coupling — if B is down, A is degraded. Async means a broker holds the message and the two services never have to be up at the same time. Candidates who skip straight to "I'd use Kafka" have skipped the actual decision.
+2. **If sync:** REST for public, cacheable, universal CRUD; gRPC for internal, typed, low-latency, streaming calls (HTTP/2 gives multiplexing and all four streaming modes); GraphQL when a mobile client needs to pick its fields in one round trip — and immediately name the N+1 problem and DataLoader batching, because that's the follow-up.
+3. **If async, the broker buffers** and the shape question comes next.
+4. **This is the red box people get wrong: what is my failure unit — per *message*, or per *partition*?** A queue gives per-message retry with a visibility timeout and a DLQ, so one poison message can't block the others, and consume-and-delete means it's gone. A log retains messages and orders them *per partition key*, so many independent consumer groups can replay — at the cost of head-of-line blocking within a partition. Fan-out is a third shape: one event, N independent durable copies (SNS cheaply, or EventBridge when you want content-based routing, a schema registry, or replay).
+5. **Pushing to a browser is its own axis**, not a broker choice: WebSocket when the client also talks back, SSE when it's server→client only (simpler, and you get auto-reconnect plus `Last-Event-ID` resume for free), long-poll as the universal fallback. Internally Kafka and externally WebSocket are complements, not alternatives — the log is the backbone, the socket is the last mile.
+6. **The reliability spine, and this is the sentence to say out loud: exactly-once delivery is impossible across a network.** What you build instead is at-least-once delivery plus an idempotent consumer — an idempotency key and a dedupe store — which gives you an exactly-once *effect*. Duplicates come from loss plus retry, so they are guaranteed, not hypothetical.
+7. **Backpressure exists in every transport but is expressed differently**: gRPC has HTTP/2 flow control, Kafka exposes consumer lag, REST returns 429, and on raw WebSocket you have to build it yourself. Knowing which knob exists per transport is the operational signal.
+8. **Contract evolution is one principle wearing three costumes** — REST versioning, protobuf field numbers, and a Kafka schema registry all reduce to *never break an existing reader*: add, don't mutate; default, don't require; deprecate, don't delete; and never reuse a field number.
+
+### The five numbers that justify the design
+
+*(This is a decision topic, so the load-bearing "numbers" are semantic thresholds rather than capacity figures — but they are the ones that change the answer.)*
+
+| Number / threshold | Derivation | Therefore |
+|---|---|---|
+| **1 partition → exactly 1 consumer** in a group | Kafka's consumer-group rule | Partition count is your **parallelism ceiling** — more consumers than partitions leaves some idle, so size partitions for future concurrency, not today's |
+| **`maxReceiveCount` → DLQ** | queue retry policy | The failure unit is one message; pick a bound and make the DLQ observable, or a poison message retries forever |
+| **Visibility timeout must exceed p99 job duration** | SQS semantics | Otherwise the same job runs twice concurrently — the classic "why did this execute twice" incident |
+| **SQS FIFO throughput is per message-group** **⚠️ verify** | FIFO design | Group by a fine-grained entity (`order_id`), never by tenant, or you serialize an entire tenant |
+| **Ordering is guaranteed only *within* a partition/group** | log + FIFO semantics | Global ordering is not on offer anywhere — design so you never need it; key by the entity whose order actually matters |
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) **●** | ③④⑥ | The async backbone under every saga/outbox; the broker choice determines your retry and replay semantics |
+| [Real-Time Updates](../../patterns/realtime-updates.md) **●** | ⑤ | Hop 1 (WS/SSE/poll) vs hop 2 (get the event to the node holding the socket) — this topic owns hop 1 |
+| [Long-Running Tasks](../../patterns/long-running-tasks.md) **●** | ④⑦ | `202 Accepted` + queue + worker + DLQ; visibility timeout and backpressure are the operational half |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) ○ | ⑥ | The idempotency key is a conditional/unique write — the same rung-1 move as everywhere else |
+| [Scaling Writes](../../patterns/scaling-writes.md) ○ | ④ | Absorb bursts in the log/queue; partition key choice is the write-scaling decision |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **A retry creates a duplicate** (payment, order, notification) | Double charge, double order, double send — user-visible and expensive | At-least-once + **idempotency key** enforced by a UNIQUE constraint or conditional write; dedupe on message id at the consumer | Duplicate-suppressed counter; more than one effect per idempotency key (must be zero) |
+| **One poison message in a partition** | With a log, that partition's consumer stalls — head-of-line blocking takes out every entity on that key range, not just the bad one | Per-partition retry with a side-channel DLQ, or use a queue if per-message isolation matters more than ordering | Consumer lag on **one** partition diverging from the rest; DLQ depth and age |
+| **A synchronous chain has no timeout or breaker** | B slows → A's threads pile up → A's callers pile up → cascading failure across the whole call graph | Aggressive timeouts, bounded retries **with jitter**, a circuit breaker, and shedding load with 429 — and consider making the hop async instead | p99 latency and thread-pool/connection saturation per hop; breaker state; retry-amplification ratio |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **SQS vs Kinesis chosen by habit** | They differ in *failure unit*, not throughput | *"Per-message retry and DLQ isolation → SQS. Per-entity ordering and replay → Kinesis or MSK. That's the whole decision."* |
+| **Kinesis per-shard head-of-line blocking** | One slow record stalls the shard | *"Per-shard retry plus a side-channel DLQ, or SQS if I need per-message failure isolation."* |
+| **SNS vs EventBridge** | Both fan out | *"SNS for cheap high-volume fan-out; EventBridge when I want content-based routing, a schema registry, or archive-and-replay."* |
+| **API Gateway integration timeout** (~29 s historically **⚠️ verify**) | Long sync calls die at the gateway | *"Anything longer becomes `202` plus a status URL — which is the long-running-task pattern anyway."* |
+| **API Gateway WebSocket is per-message priced** | Chatty duplex channels | *"Fine for modest volumes; at millions of sockets, self-managed WS on an NLB plus a connection registry."* |
+| **AWS gives you no managed gRPC broker and no circuit breaker** | Both get assumed | *"gRPC is a run-it-yourself box on ALB/NLB, and the breaker is my code — SDK adaptive retry is not a breaker."* |
+
+### If you only remember one thing
+
+> **Decide sync vs async first (it's a coupling decision), then choose by *failure unit* — per-message retry means a queue, per-entity ordering with replay means a log, one-to-many means fan-out — and remember that exactly-once delivery doesn't exist, so every design is at-least-once plus an idempotency key.**

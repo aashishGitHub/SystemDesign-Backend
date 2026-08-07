@@ -35,6 +35,7 @@
 | [questions.md](./questions.md) | All questions, organized by level. Read first. |
 | [answers.md](./answers.md) | Full answers with code examples and tradeoff tables. |
 | [deep-dive.md](./deep-dive.md) | In-depth explanations — beginner to architect level. |
+| [diagrams.md](./diagrams.md) | 11 interview-ready Mermaid diagrams, ending with the **🎯 one-page master diagram** — the single diagram to reproduce on the whiteboard, with narration, key numbers, patterns, failure modes and AWS traps. Revise from this first. |
 
 ---
 

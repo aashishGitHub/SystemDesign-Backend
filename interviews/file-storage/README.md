@@ -35,6 +35,7 @@
 | [questions.md](./questions.md) | All questions, organized by level. Read first. |
 | [answers.md](./answers.md) | Full answers with code examples and tradeoff tables. |
 | [deep-dive.md](./deep-dive.md) | In-depth explanations — beginner to architect level. |
+| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its 60-second narration, the numbers that justify it, the patterns it assembles, and the three things that break. Authored last, revised from first. |
 
 ---
 

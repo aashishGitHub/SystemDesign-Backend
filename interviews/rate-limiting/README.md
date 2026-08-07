@@ -35,6 +35,7 @@
 | [questions.md](./questions.md) | 32 structured interview questions (8 levels + bonus). |
 | [answers.md](./answers.md) | Answers keyed to each question, with code/table per answer. |
 | [deep-dive.md](./deep-dive.md) | Beginner → Senior → Architect depth, failure modes, and cheat sheet. |
+| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its 60-second narration, the numbers that justify it, the patterns it assembles, the three things that break, and the AWS traps to name unprompted. Revise from this first. |
 
 ---
 

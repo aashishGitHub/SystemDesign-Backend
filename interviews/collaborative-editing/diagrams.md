@@ -428,3 +428,109 @@ flowchart LR
 - Recomputing the **whole sheet** instead of dirty-marking the subtree.
 - ACKing an op **before** durable log → crash loses an accepted edit.
 - No **fencing token** → split-brain double-write.
+
+---
+
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** final revision, 10 minutes before the interview — and the single diagram to reproduce on the whiteboard. If you can narrate it end-to-end and name the tradeoff at each **red** box, you're ready.
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults**; quotas are order-of-magnitude planning numbers to **verify**. OT/CRDT theory here is standard; claims about how Google/Figma implement it internally are hedged.
+
+### The central split in one sentence
+
+**A collaborative spreadsheet is *two* agreement problems bolted together — the **sync plane** agrees on the raw cells people typed (OT/CRDT convergence, never silently dropping an edit) and the **calc plane** agrees on the derived cells formulas produce (a dependency DAG, deterministically recomputed) — you merge *inputs* and recompute *outputs*, never merge computed values, and the two planes collide precisely at structural row/column operations.**
+
+```mermaid
+flowchart LR
+    C1(["Editor A<br/>optimistic local apply"])
+    C2(["Editor B"])
+
+    GW["① stateless gateway<br/>route by doc_id · sticky<br/>WS on NLB"]
+
+    subgraph DOC["② SINGLE-WRITER DOC-SERVER — one owner per doc"]
+        direction TB
+        LEASE{"lease + FENCING TOKEN<br/>storage rejects a stale epoch<br/>DynamoDB conditional write"}
+        SYNC["③ SYNC PLANE — OT vs server order<br/>total order per doc = trivial append<br/>no per-op consensus"]
+        STRUCT{"④ STRUCTURAL OPS<br/>insert/delete row+col<br/>stable (row_id, col_id) NOT coordinates<br/>+ rewrite every formula reference"}
+        CALC["⑤ CALC PLANE — dirty-mark →<br/>topo-sort → recompute subtree only<br/>DETERMINISTIC (IEEE-754, locale, NOW/RAND)"]
+        LEASE --> SYNC --> STRUCT --> CALC
+    end
+
+    LOG[("⑥ op log (WAL) — APPEND BEFORE ACK<br/>+ periodic snapshot<br/>DynamoDB/Aurora + S3")]
+    PRES["⑦ presence — SEPARATE channel<br/>cursors throttled, lossy, ephemeral<br/>ElastiCache · never blocks an edit"]
+    IDLE["⑧ idle doc → flush snapshot, unload<br/>live RAM tracks ACTIVE docs, not 10⁸"]
+
+    C1 -->|"submit(op, base_rev)"| GW
+    C2 --> GW
+    GW --> LEASE
+    CALC -->|"append"| LOG
+    LOG -->|"then ACK + broadcast ordered ops"| C1
+    LOG -.-> IDLE
+    C1 -.->|"cursor"| PRES
+    PRES -.-> C2
+
+    style GW fill:#dcfce7,stroke:#16a34a
+    style DOC fill:#dbeafe,stroke:#1d4ed8
+    style LOG fill:#dbeafe,stroke:#1d4ed8
+    style PRES fill:#fed7aa,stroke:#ea580c
+    style IDLE fill:#e0e7ff,stroke:#4338ca
+    style LEASE fill:#fee2e2,stroke:#dc2626
+    style STRUCT fill:#fee2e2,stroke:#dc2626
+    style CALC fill:#fef9c3,stroke:#ca8a04
+```
+
+### The 60-second narration
+
+*(one line per numbered box ①–⑧)*
+
+1. **Gateways are stateless and route by `doc_id`.** All the state lives one hop in, so the fleet that terminates WebSockets can scale and restart freely.
+2. **Each document has exactly one in-memory owner, protected by a lease and a fencing token.** This is the move that makes everything else cheap: a single writer turns "agree on op order" into a plain append — no per-op consensus, no clock sync. The fencing token is what makes it *safe* under a partition: storage rejects appends carrying a stale ownership epoch, so a partitioned old owner physically cannot double-write.
+3. **Sync plane:** each op is transformed against the server's order and assigned a revision. OT is the right pick here (server is present, cell counts are huge, so per-element CRDT identities would be expensive) — but say the alternative and why.
+4. **The red box is the signature hard problem: structural operations.** Inserting a row shifts every cell address *and* rewrites every formula reference below it — both planes at once. That's why cells are addressed by **stable `(row_id, col_id)`**, not display coordinates, plus explicit transform rules for references that start before, end inside, or span the boundary. Naive implementations produce a *plausible wrong number* here, which is worse than a crash, so this deserves property-based convergence tests.
+5. **Calc plane:** dirty-mark the changed cell, topologically sort its transitive dependents, recompute **only that subtree** — never the whole sheet. And it must be **deterministic** (identical function semantics, IEEE-754, locale-independent, with volatile inputs like `NOW()`/`RAND()`/`IMPORTRANGE` resolved on the server) or collaborators watch their numbers flicker and correct themselves.
+6. **The durability rule is one sentence: append to the op log before you ACK.** A crash can then only lose edits that were never acknowledged, which clients resubmit idempotently. Periodic snapshots bound replay time.
+7. **Presence is a separate, throttled, lossy channel.** Cursors are high-frequency and worthless a second later; putting them on the durable edit path would let a mouse movement block a keystroke.
+8. **Idle documents flush a snapshot and unload**, so live memory tracks *active* documents rather than the ~10⁸ that exist.
+
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **~50 ops/s on a busy doc** | ~10 editors × ~1–5 coalesced ops/s | This is **not** a throughput problem. Almost every instinct from chat/feed design is wrong here — don't shard within a document |
+| **1M live docs × ~1–10 MB = 1–10 TB RAM** | live sessions × in-memory sheet | So you scale **across** documents (many stateful sessions), and idle-unload is mandatory, not an optimization |
+| **~10⁸ documents total vs ~1M live** | catalogue vs concurrency | Confirms the same thing from the other side: memory is sized by *active*, storage by *total* |
+| **~100–200 ms remote-edit visibility** (local: instant) | interactivity budget | Forces optimistic local apply + a PENDING buffer; the server round trip must never gate the keystroke |
+| **~10⁷ cells per sheet** (documented Google limit — verify) | product cap | Rules out per-cell CRDT metadata as the default, and forces a virtualized canvas grid on the client |
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [ZooKeeper & coordination](../../patterns/zookeeper.md) **●** | ② ownership | Lease + **fencing token**; the *resource* rejects the stale epoch — the lock alone is never the guarantee |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) **●** | ②③ | Rung 4 — a lease per document, chosen precisely so per-op contention disappears entirely |
+| [Real-Time Updates](../../patterns/realtime-updates.md) **●** | ①⑦ | WebSocket for ordered edits; a *separate* best-effort channel for presence |
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) ○ | ⑥ | WAL + snapshot + replay — the same durability shape as a storage engine ([storage-engines](../storage-engines/)) |
+| [Scaling Reads](../../patterns/scaling-reads.md) ○ | ⑧ | Snapshot + delta so opening a doc is one snapshot read plus a short op tail |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **Doc-server crashes mid-session** | Everything in memory is gone; unACKed ops vanish | Append-before-ACK means only *unacknowledged* edits are lost, and clients resubmit them idempotently; recovery = load latest snapshot + replay the op tail | Time-to-recover per doc; count of client resubmissions after reconnect; snapshot age (bounds replay) |
+| **Network partition → two owners** | Two servers append to one log → an unmergeable history, i.e. silent corruption | Lease expiry plus a **fencing token**: storage refuses appends from the old epoch, so the partitioned owner cannot write at all | Rejected-stale-epoch counter (should be rare but non-zero during failover); lease-renewal failure rate |
+| **Non-deterministic recompute** | Two collaborators see different numbers for the same formula — the worst bug class, because nothing crashes | Identical function semantics + IEEE-754 + locale-independence; volatile/external functions resolved **server-side**; server value wins and corrects the optimistic client | Client-vs-server recompute mismatch rate (should be ~0); property-based convergence tests in CI |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **There is no managed ZooKeeper/etcd for app use** | Ownership leases are load-bearing | *"So the lease is a DynamoDB row with a conditional write and a monotonic epoch, or I self-manage etcd on EKS — and either way the storage layer checks the fencing token."* |
+| **API Gateway WebSocket is per-message priced** | Every keystroke is a message | *"Self-managed WebSocket on an NLB with sticky routing by `doc_id`; per-message pricing is the wrong shape for an editor."* |
+| **S3 has no atomic rename** | Snapshot publication looks like a file move | *"Snapshots are versioned immutable keys and the pointer lives in DynamoDB — I never rely on rename semantics."* |
+| **DynamoDB item size limit** (~400 KB **⚠️ verify**) | A sheet snapshot is far larger | *"Snapshot bytes go to S3; DynamoDB holds metadata, the head revision, and the op log entries."* |
+| **Sticky routing is yours to build** | ALB stickiness is cookie-based, not `doc_id`-based | *"A connection/ownership registry maps `doc_id` → node; the gateway consults it rather than relying on LB affinity."* |
+
+### If you only remember one thing
+
+> **Merge inputs, recompute outputs: the sync plane converges the raw cells (OT against a single writer's total order) and the calc plane deterministically recomputes only the dirty subtree — with one owner per document held by a lease *and* a fencing token, and the op appended to the log before it is ever ACKed.**

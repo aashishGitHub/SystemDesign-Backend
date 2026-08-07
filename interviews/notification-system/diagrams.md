@@ -711,3 +711,124 @@ flowchart TD
 - Redis is yellow: the brief write-loss window on failover is acceptable because Redis stores soft state (rate caps, backoff signals), not notification records
 - Part B fallback fires on **permanent** rejection only — transient 5xx goes through the normal retry loop first
 - `parent_notification_id` is the audit field that lets you reconstruct "we tried push, it failed permanently, then sent SMS" from the notification table
+
+---
+
+## 🎯 The One-Page Master Diagram — THE ONE TO DRAW IN THE INTERVIEW (final consolidated design)
+
+> **When to use:** final revision, 10 minutes before the interview — and the single diagram to reproduce on the whiteboard. If you can narrate it end-to-end and name the tradeoff at each **red** box, you're ready.
+> Spec: [`docs/instructions.md` §2.1](../../docs/instructions.md) · AWS names: [`docs/AWS_SERVICE_MAP.md`](../../docs/AWS_SERVICE_MAP.md).
+> ⚠️ AWS services are **defensible defaults**; every quota is an order-of-magnitude planning number to **verify against current docs**.
+
+### The central split in one sentence
+
+**Accepting a notification and delivering it are two different systems — ingestion must return in milliseconds and never block on a provider, dispatch must run at each provider's own rate behind its own queue and circuit breaker — and the gates that decide whether to send at all (caps, quiet hours, unsubscribe) belong at *dispatch* time, not ingestion time, because a 4-hour fan-out outlives the preference that was true when it started.**
+
+```mermaid
+flowchart LR
+    CALL(["Producer service<br/>1:1 alert · OTP · campaign"])
+
+    subgraph IN["① INGEST — must return in ms"]
+        direction TB
+        API["API: validate + persist FIRST,<br/>then enqueue<br/>DB row before queue = no invisible loss"]
+        FAN["② fan-out worker<br/>1 campaign job → page 1K at a time<br/>UNIQUE(campaign_id, user_id)<br/>never expand 50M inline"]
+        API --> FAN
+    end
+
+    subgraph Q["③ PER-CHANNEL QUEUES — failure isolation"]
+        direction TB
+        QP[["push · 16 partitions<br/>SQS / MSK"]]
+        QE[["email · 8 partitions"]]
+        QS[["sms · 4 partitions"]]
+    end
+
+    GATE{"④ DISPATCH-TIME GATES<br/>critical BYPASSES all of them<br/>cap (Redis INCR) · quiet hours (IANA tz)<br/>unsubscribe · GDPR deletion<br/>quiet hours = DELAY, never drop"}
+
+    subgraph DISP["⑤ DISPATCH — at the PROVIDER's rate"]
+        direction TB
+        W["workers · render per user<br/>80% fleet on critical / 20% promo<br/>idem key = hash(campaign, user, channel)"]
+        CB{"⑥ circuit breaker PER PROVIDER<br/>3× 5xx → open · 30s probe<br/>coordinated 429 backoff in Redis"}
+        W --> CB
+    end
+
+    PROV(["⑦ APNs · FCM · SES · Twilio<br/>the irreducible risk<br/>cannot be made redundant"])
+    FALL["⑧ fallback chain — CRITICAL only<br/>push → SMS → email<br/>on PERMANENT rejection only<br/>new record + parent_notification_id<br/>→ re-enters the next channel's queue"]
+    DLQ["DLQ + alert<br/>critical depth &gt; 100 → page"]
+    ST[("notifications + prefs<br/>DynamoDB / Cassandra<br/>shard by user_id, NOT timestamp")]
+
+    CALL -->|"accept"| API
+    FAN --> QP
+    FAN --> QE
+    FAN --> QS
+    Q --> GATE
+    GATE -->|"allowed"| W
+    CB -->|"closed"| PROV
+    PROV -.->|"permanent reject"| FALL
+    CB -.->|"exhausted"| DLQ
+    W -.-> ST
+
+    style IN fill:#dcfce7,stroke:#16a34a
+    style Q fill:#fed7aa,stroke:#ea580c
+    style DISP fill:#dbeafe,stroke:#1d4ed8
+    style ST fill:#dbeafe,stroke:#1d4ed8
+    style FALL fill:#fef9c3,stroke:#ca8a04
+    style GATE fill:#fee2e2,stroke:#dc2626
+    style CB fill:#fee2e2,stroke:#dc2626
+    style DLQ fill:#fee2e2,stroke:#dc2626
+```
+
+### The 60-second narration
+
+*(one line per numbered box ①–⑧)*
+
+1. **Ingestion persists, then enqueues, and returns in milliseconds.** The order matters: DB row *first*, queue second. Enqueue-first means a crash between the two loses a notification invisibly — and "invisible" is the worst adjective in this system.
+2. **A campaign is one job, not 50 million.** The fan-out worker pages through recipients ~1K at a time writing per-user jobs, guarded by `UNIQUE(campaign_id, user_id)` so a crashed-and-restarted fan-out cannot duplicate. Expanding a 50M recipient list inside the API request is the classic wrong answer.
+3. **One queue per channel, never one shared queue.** Push, email and SMS have completely different rates, costs and failure modes — a backed-up email provider must not starve OTP pushes. This is failure isolation, not tidiness.
+4. **The red diamond is the highest-signal box: the gates run at *dispatch* time.** Rate caps (a Redis `INCR` per user/channel/day), quiet hours in the user's **IANA timezone** (not a fixed offset), unsubscribe, and GDPR deletion. Checked here because a 4-hour campaign outlives the preference that was true at ingestion. And **critical bypasses all of it** — an OTP is not subject to a frequency cap. Note quiet hours **delays**, it does not drop.
+5. **Dispatch runs at the provider's rate**, renders the template per user (store template + variables, never pre-rendered bodies), and carries a deterministic idempotency key so at-least-once delivery never becomes a user-visible duplicate. Roughly 80% of the worker fleet sits on critical, 20% on promotional.
+6. **A circuit breaker per provider**, because they fail independently: three consecutive 5xx opens it, a 30-second probe half-opens it. On a 429 the first worker writes a shared `backoff_until` to Redis so the *whole fleet* backs off together instead of each worker discovering the limit separately.
+7. **The providers are the one thing I cannot make redundant** — every other layer is self-healing, this one is irreducible.
+8. **So the application-level answer is a fallback chain, for critical only**: push → SMS → email, triggered by a **permanent** rejection (bad device token), never by a transient 5xx, and each hop writes a *new* record with `parent_notification_id` and its own idempotency key so the audit trail survives. Everything that still fails lands in a DLQ that is *monitored* — critical depth over ~100 pages someone.
+
+### The five numbers that justify the design
+
+| Number | Derivation | Therefore |
+|---|---|---|
+| **1M notifications/s peak** | stated constraint | A relational primary tops out far below this (~50 MB/s writes, illustrative) → wide-column/KV store, partitioned by `user_id`, never by timestamp |
+| **~512 MB/s write I/O** | 1M rows/s × ~512 bytes | Sizes the storage tier directly, and rules out "just put it in Postgres" |
+| **Push 700K/s ÷ ~50K per partition ≈ 16 partitions** | 70% of 1M, per-partition throughput (illustrative) | Partition counts are *derived*, not guessed — same method gives ~8 email, ~4 SMS |
+| **< 5 s critical end-to-end** | stated SLA | Forces the priority split (80/20 fleet) and separate critical queues — a promotional backlog must never sit in front of an OTP |
+| **80% critical / 20% promotional by count**, promo batches ~10× larger | stated constraint | Two tiers with different TTLs, different gates, and different fallback rules — one pipeline with one policy cannot serve both |
+
+### The patterns this assembles
+
+| Pattern | Where | The move |
+|---|---|---|
+| [Multi-Step Processes](../../patterns/multi-step-processes.md) **●** | ①②⑧ | Persist-then-enqueue, paged fan-out, fallback chain with an audit parent — each step idempotent and re-drivable |
+| [Managing Long-Running Tasks](../../patterns/long-running-tasks.md) **●** | ③⑤ | Accept fast → queue → workers → retries with jitter → DLQ; visibility timeout must exceed p99 send |
+| [Scaling Writes](../../patterns/scaling-writes.md) **●** | ⑤ storage | 1M rows/s spread across partitions by `user_id`; timestamp keys create a moving hot partition |
+| [Dealing with Contention](../../patterns/dealing-with-contention.md) ○ | ② dedupe, ④ caps | `UNIQUE(campaign_id, user_id)` as the dedupe guarantee; atomic `INCR` for the per-day cap |
+| [Rate limiting](../rate-limiting/) ○ | ④⑥ | Per-user caps *and* per-provider limits — two different limiters with different purposes |
+
+### The three things that break (and the mitigation)
+
+| Failure | Blast radius | Mitigation | How you detect it |
+|---|---|---|---|
+| **A provider degrades** (Twilio 5xx, APNs throttle) | Without isolation, that channel's backlog starves every other channel — including OTPs | Per-channel queues + per-provider circuit breaker + **coordinated** 429 backoff via a shared Redis key; fallback chain for critical | Per-provider error rate and breaker state; queue depth **per channel**; critical p95 latency |
+| **Fan-out worker crashes mid-campaign** | Restart re-sends to users already notified — duplicate marketing at 50M scale is a brand incident | `UNIQUE(campaign_id, user_id)` makes the re-send a no-op; page cursor persisted so it resumes rather than restarts | Fan-out lag (target < ~10 min for 10M recipients); duplicate-suppressed counter |
+| **A user unsubscribes during a 4-hour fan-out** | You send to someone who opted out — at best annoying, at worst a legal/GDPR problem | Gates are evaluated at **dispatch**, so the late opt-out is caught; the same check makes DLQ replays safe years later | Suppressed-at-dispatch count by reason; complaint/spam rate; deletion-request SLA |
+
+### The AWS-specific traps to name unprompted
+
+| Trap | Why it bites here | What you say |
+|---|---|---|
+| **SQS `DelaySeconds` caps at ~15 min** **⚠️ verify** | Quiet hours can need an 8-hour delay | *"Quiet-hours deferral isn't a queue delay — it's a scheduled row (EventBridge Scheduler) or a visible-after timestamp the worker respects."* |
+| **DynamoDB TTL is not a scheduler** (~48 h, best-effort **⚠️ verify**) | TTL looks like a way to expire promotional messages | *"TTL is cleanup for expired records; the send/expiry decision is checked at dispatch."* |
+| **SQS FIFO throughput is per message-group** **⚠️ verify** | Grouping by tenant serializes a whole tenant | *"If I need ordering I group by `user_id` — many small groups. Mostly I don't need ordering at all, so Standard + idempotency."* |
+| **SNS vs EventBridge chosen by habit** | Both "do fan-out" | *"SNS for cheap high-volume fan-out to the channel queues; EventBridge when I want content-based routing or replay of producer events."* |
+| **SES has sending quotas and reputation** | Cold-starting 200K emails/s is not a config change | *"Dedicated IPs, warm-up ramp, and separate transactional vs marketing identities so a campaign can't damage OTP deliverability."* |
+| **No managed circuit breaker; no exactly-once** | Both are load-bearing here | *"The breaker is my code, and exactly-once is at-least-once delivery plus a UNIQUE idempotency key — AWS gives me neither."* |
+
+### If you only remember one thing
+
+> **Persist before you enqueue, fan out in pages rather than inline, give every channel its own queue and every provider its own breaker — and evaluate caps, quiet hours and unsubscribe at *dispatch* time, because the only thing worse than a duplicate notification is one sent to someone who already opted out.**

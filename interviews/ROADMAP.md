@@ -19,11 +19,24 @@
 
 > **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `web-crawler`, `search-autocomplete`.
 
+### 🎯 Master-diagram coverage — **29 / 29 topic folders complete**
+
+Every topic folder now ends its `diagrams.md` with the **🎯 One-Page Master Diagram** ([`docs/instructions.md` §2.1](../docs/instructions.md)) — the single artifact to revise from the night before and reproduce on the whiteboard. Each one carries: the central split in one sentence · the master Mermaid diagram (numbered flow, AWS + pattern annotations, red on the 2–3 hard parts) · a 60-second narration, one line per numbered box · the five numbers that justify the design, with derivations · the patterns it assembles · the three things that break, with blast radius / mitigation / detection · and an **AWS traps to name unprompted** table.
+
+| | Folders |
+|---|---|
+| **Master diagram ✅** | all 29 — every `interviews/*/diagrams.md` |
+| **+ optional 30-min spoken transcript** ([§2.2](../docs/instructions.md)) | `seat-reservation`, `food-delivery` |
+| **Full numbered diagram set (Diagrams 1–N) still to author** | the 20 folders whose `diagrams.md` currently holds the master diagram only — noted in each file's header |
+| **Non-standard folder** | `sse` — a production-experience deep dive (no `questions.md`/`answers.md`/`README.md`); has a master diagram keyed to its own Q&A |
+
+All Mermaid blocks are render-verified with `mermaid-cli`, not eyeballed.
+
 ---
 
 ## How Each Topic Folder is Structured
 
-Every topic lives at `interviews/<topic-slug>/` and contains exactly these files:
+Every topic lives at `interviews/<topic-slug>/` and contains these files:
 
 ```
 interviews/
@@ -32,6 +45,8 @@ interviews/
     questions.md    ← All interview questions (beginner → architect level)
     answers.md      ← Concise answers keyed to question numbers
     deep-dive.md    ← In-depth explanations, real-world examples, failure modes
+    diagrams.md     ← Mermaid diagrams, ENDING with the 🎯 one-page master diagram
+    simple-diagram.md  ← (where present) the bare-minimum mental model
 ```
 
 **Creation checklist for each topic:**
@@ -39,6 +54,7 @@ interviews/
 - [ ] `questions.md` — minimum 30 questions, 8+ levels, beginner → architect
 - [ ] `answers.md` — every question answered with code examples and tradeoff tables
 - [ ] `deep-dive.md` — 3 depths per concept (🟢 beginner, 🟡 senior, 🔴 architect), real-world company examples, failure modes, quick recall cheat sheet at end
+- [ ] `diagrams.md` — 8–12 diagrams mapped to question numbers, **then the 🎯 one-page master diagram as the final section** (the spec is [`docs/instructions.md` §2.1](../docs/instructions.md); write it last, revise from it first)
 
 ---
 

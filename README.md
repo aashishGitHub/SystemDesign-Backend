@@ -68,15 +68,29 @@ Located in [`docs/`](./docs/) — the *how to work* layer, sitting alongside the
 
 **The repo's tech-naming convention** (from `AWS_SERVICE_MAP.md` §0): say the **primitive** first, the **AWS service** second, the **swap** third — *"I need an at-least-once work queue with a visibility timeout and a DLQ; on AWS that's SQS; self-hosted it's RabbitMQ."* Primitive-first keeps the same sentence usable in a cloud-agnostic interview, where a service catalog scores nothing.
 
-Every topic's `diagrams.md` also ends with a **🎯 one-page master diagram** — the whole system on one screen with AWS and pattern annotations, for revision the night before. Exemplars: [payment-system](./interviews/payment-system/diagrams.md), [video-streaming](./interviews/video-streaming/diagrams.md).
+### 🎯 The one-page master diagram — in **all 29 topic folders**
+
+Every topic's `diagrams.md` ends with a **🎯 one-page master diagram**: the whole system on one screen, with the numbered flow you narrate, AWS and pattern annotations on the boxes, and red on the 2–3 places the real difficulty lives. It's the last thing authored and the first thing you read when revising. Each one carries the same six blocks plus an AWS-traps table:
+
+| Block | What it gives you in the room |
+|---|---|
+| **The central split in one sentence** | The organizing insight — say this before you draw anything |
+| **The master Mermaid diagram** | Numbered ①–⑧ boxes, AWS service + pattern on each, red on the hard parts |
+| **The 60-second narration** | One spoken line per numbered box — what you say while your hand draws it |
+| **The five numbers that justify the design** | With derivations, so you can defend the shape instead of asserting it |
+| **The patterns this assembles** | Links into [`patterns/`](./patterns/README.md) rather than re-deriving the ladder |
+| **The three things that break** | Blast radius · mitigation · how you detect it |
+| **AWS traps to name unprompted** | Where the obvious AWS choice is wrong for *this* system (quotas marked ⚠️ verify) |
+
+Exemplars: [seat-reservation](./interviews/seat-reservation/diagrams.md) (with a full **30-minute spoken transcript**), [payment-system](./interviews/payment-system/diagrams.md), [video-streaming](./interviews/video-streaming/diagrams.md). Spec: [`docs/instructions.md` §2.1](./docs/instructions.md). All Mermaid blocks are render-verified with `mermaid-cli`, not eyeballed.
 
 ---
 
 ## 🎓 Interview Study Materials
 
-Located in [`interviews/`](./interviews/). Each topic contains 4 files: `README.md`, `questions.md`, `answers.md`, `deep-dive.md`.
+Located in [`interviews/`](./interviews/). Each topic contains `README.md`, `questions.md`, `answers.md`, `deep-dive.md`, and `diagrams.md` — whose final section is always the 🎯 one-page master diagram above. Some topics add `simple-diagram.md` (the bare-minimum mental model), `story.md`, or a `radio-walkthrough.md`.
 
-See [`interviews/ROADMAP.md`](./interviews/ROADMAP.md) for the full study plan.
+See [`interviews/ROADMAP.md`](./interviews/ROADMAP.md) for the full study plan and the master-diagram coverage table.
 
 ### Topics Completed
 

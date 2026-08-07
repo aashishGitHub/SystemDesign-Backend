@@ -35,6 +35,7 @@
 | [questions.md](./questions.md) | 32 structured questions (8 levels + bonus QB). Attempt cold first. |
 | [answers.md](./answers.md) | Every answer with code or comparison table, named tradeoffs, company references. |
 | [deep-dive.md](./deep-dive.md) | Beginner → Architect depth, real-world company implementations, pattern recognition, anti-patterns, cheat sheet. |
+| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its 60-second narration, the numbers that justify it, the patterns it assembles, the three things that break, and the AWS traps to name unprompted. Revise from this first. |
 
 ---
 
