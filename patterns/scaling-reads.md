@@ -31,6 +31,18 @@ Read traffic grows faster than write traffic in almost every consumer system —
 
 ## 1. First: Is It Volume or Is It One Bad Query?
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>"The reads are slow" is one sentence describing two unrelated problems, and their fixes point in opposite directions.</p>
+<p>A <strong>bad query</strong> is slow even when nobody else is using the system, because the slowness is inside the query itself — the work it does per request is simply too large. More machines do not help. You now run the same bad query in more places.</p>
+<p>A <strong>capacity problem</strong> is fast when the system is quiet and degrades as requests pile up, because the machine is running out of some resource. Here more machines genuinely help.</p>
+<p>So the first measurement is not "how slow is it" but "is it slow when it is idle". That single question sorts the two apart before you spend anything.</p>
+<p>An <strong>N+1 query</strong> is the case that disguises itself as the second while being the first. One page load becomes 1 query for the list plus 1 query per item, so 50 posts turn into 51 queries. The database sees a flood of small queries and the graph looks exactly like a traffic problem. It is a batching bug in the application, and no amount of database capacity fixes it.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why adding five read replicas to a system that is already slow at 1 QPS changes nothing.</p>
+
+</div>
+
 Before any architecture, separate the two failure shapes — they have opposite fixes:
 
 | Symptom | Diagnosis | Fix |
@@ -48,6 +60,21 @@ The **N+1 query** deserves a call-out because it's the most common cause of "our
 ---
 
 ## 2. Rung 1: Optimize Inside the Database
+
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>This rung changes nothing outside the database. No new services, no new failure modes, no new consistency questions.</p>
+<p>An <strong>index</strong> is a separate structure holding the column values in sorted order, so the database can jump straight to the rows it wants instead of reading every row and discarding most of them.</p>
+<p>Because the index is sorted, the order of its columns matters. <code>(user_id, created_at)</code> is sorted by <code>user_id</code> first, and sorted by <code>created_at</code> only <em>within</em> one <code>user_id</code>. A query that knows the <code>user_id</code> therefore finds one contiguous block to scan. A query that knows only the <code>created_at</code> does not, because its matching rows are scattered across every <code>user_id</code> block. That is the left-prefix rule, and it is why column order is a design decision rather than a detail.</p>
+<p>A <strong>covering index</strong> already contains every column the query asks for, so the database answers from the index and never opens the table at all.</p>
+<p><strong>Selectivity</strong> is how much of the table a lookup eliminates. An index on a true/false column eliminates only half the table, which does not justify the random jumps, so the planner correctly ignores it and scans instead.</p>
+<p>The cost sits on the write side. Every index is another structure to update on every insert, so five indexes mean five updates per row written, plus the log and the disk they consume. An index buys read latency with write throughput.</p>
+<p><strong>Denormalization</strong> means storing the answer's shape instead of computing it each time — a count column instead of counting, a copy of the author's name on the post row instead of a join. Reads get cheap and writes get expensive, because one change now has to reach every copy, and a fan-out that fails halfway leaves data that is visibly wrong.</p>
+<p><strong>Connection pooling</strong> is the one that is not about queries at all. Each database connection costs real memory on the server, so a few hundred of them can cap throughput before any query does. A pooler puts thousands of application connections in front of a few dozen real ones.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why an index on <code>(user_id, created_at)</code> cannot serve <code>WHERE created_at &gt; ?</code> on its own.</p>
+
+</div>
 
 ### Indexing
 
@@ -67,6 +94,7 @@ CREATE INDEX idx ON posts (user_id, created_at) INCLUDE (title);
 
 The cost side, which candidates forget: **every index is a write amplifier.** Five indexes means five B-tree updates per insert, more WAL, and more space. Indexes trade write throughput and storage for read latency — name that tradeoff rather than saying "add an index" unconditionally.
 
+→ **Covering vs primary vs clustered, and the row-fetch they remove: [`extra-details §1`](./extra-details.md#1-index-internals-covering-primary-and-clustered)**
 → B-tree mechanics: [`storage-engines §2`](../interviews/storage-engines/deep-dive.md#2-the-b-tree-read-optimized-in-place-storage) · LSM read path and why it needs Bloom filters: [`§4`](../interviews/storage-engines/deep-dive.md#4-the-lsm-read-path) · [`§5`](../interviews/storage-engines/deep-dive.md#5-bloom-filters-and-friends) · [`fundamentals/bloom-filters.md`](../fundamentals/bloom-filters.md)
 
 ### Denormalization
@@ -89,6 +117,16 @@ Often overlooked and frequently the actual ceiling. Each Postgres connection is 
 
 ## 3. Rung 2: Vertical Scaling (Yes, Really)
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Vertical scaling means running the same database on a bigger machine. The application does not change, the data does not move, and no new consistency questions appear. That is the entire appeal — every other rung adds something you then have to reason about forever.</p>
+<p>The reason it works so well for <em>reads</em> specifically is memory, not processor speed. A database keeps recently used pages in RAM. If the part of the data your users actually touch — the working set — fits in that RAM, reads are answered from memory and never wait for a disk. If it does not fit, reads go to disk, and disk is roughly two orders of magnitude slower. Doubling RAM can move you across that line, and crossing that line is a far bigger win than any percentage improvement in CPU.</p>
+<p>Three honest limits. Price stops being proportional at the top of the range. There is a largest machine in every family, and you cannot buy past it. And one machine is still one thing that can fail. So this rung buys time — which is genuinely valuable — rather than ending the problem.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why "does the working set fit in RAM?" is the question to ask here, rather than "is the CPU fast enough?"</p>
+
+</div>
+
 Doubling the instance size is a config change with no consistency implications, no application changes, and no new failure modes. Compared to that, replicas add lag semantics and sharding adds a distributed-systems project.
 
 The specific reason it works so well for reads: **the win is usually RAM, not CPU.** If the working set fits in the buffer pool, reads never touch disk, and the latency difference between a memory hit and an SSD read is roughly two orders of magnitude. A modern instance can hold hundreds of gigabytes to a few terabytes of RAM — which is the entire hot dataset for a great many "web scale" applications.
@@ -98,6 +136,20 @@ Saying "I'd first check whether the working set fits in RAM on a larger instance
 ---
 
 ## 4. Rung 3: Read Replicas
+
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>A read replica is a copy of the database that receives every write the primary received, a short time later. Reads are sent to the copies; writes still go to the original.</p>
+<p>The delay exists because the primary tells the client "done" before the copies have the change. That is what asynchronous means here, and it is the source of every complication that follows.</p>
+<p>The user-visible consequence has one specific shape. Someone edits their own data, the write succeeds, they reload the page, that read is served by a copy which has not caught up, and they see their old value. Nothing is broken — the system is behaving exactly as designed — but from the user's side their own edit vanished. Fixing it always means the same thing: make sure <em>that person's</em> read is served by something that definitely holds their write. The primary, a cache you wrote to at the same moment, or a replica you explicitly waited for.</p>
+<p>Two limits are easy to miss.</p>
+<p>Replicas do nothing for writes. Every copy applies every write, so ten replicas mean the same write stream executes eleven times across the fleet. If the primary is struggling <em>because of writes</em>, adding replicas makes the situation worse, not better.</p>
+<p>And a copy may apply changes one at a time even though the primary accepted many at once. When that happens the copy cannot keep up at all, and the delay grows for as long as the load lasts instead of settling at some number. That is why lag is monitored as an alertable signal rather than watched on a dashboard.</p>
+<p>Separately, and often the larger win: a replica in the user's region removes the intercontinental round trip from every read.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why a primary at 90% CPU might get <em>worse</em> after you add five replicas.</p>
+
+</div>
 
 Stream the write-ahead log from a primary to N followers; route reads to followers, writes to the primary.
 
@@ -143,6 +195,21 @@ Also worth naming: **cross-region replicas** cut read latency for distant users 
 
 ## 5. Rung 4: Caching
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>A cache is a copy of an answer kept somewhere faster than the place that produced it. It helps for exactly one reason: the same thing is being asked for repeatedly. If every read asks for different data, the copy is never reused and the cache is only an extra step.</p>
+<p>The default arrangement is <strong>cache-aside</strong>. The application looks in the cache; on a miss it reads the database and stores the answer for next time. It is the default because it only ever holds things somebody actually asked for, and because if the cache disappears the application still works — it just gets slower.</p>
+<p>Storing is not the hard part. Knowing when the stored copy has become wrong is. There are three honest answers, and choosing one deliberately is what the question is really testing.</p>
+<p><strong>Give the copy an expiry time</strong> and accept it can be wrong for that long. No coordination, and it repairs itself, which is why it is usually the right answer. It converts the problem into "how stale is acceptable?" — a product question you should ask rather than assume.</p>
+<p><strong>Delete the copy when the underlying data changes.</strong> Accurate, but it requires you to know every cached key derived from that data, and one path you forget is data that is wrong permanently rather than briefly.</p>
+<p><strong>Put a version number in the key.</strong> A write bumps the version, so old entries are simply never asked for again and fall out on their own. Nothing has to be found and deleted, so there is no "did the delete succeed?" to worry about.</p>
+<p>Two details separate people who have run caches from people who have only drawn them. Delete the entry rather than overwriting it — two writers overwriting the same entry can interleave and leave the cache permanently disagreeing with the database, while a delete just means the next reader rebuilds from the source of truth. And set an expiry even when you also invalidate explicitly, because it turns a missed invalidation from a permanent bug into a temporary one.</p>
+<p>Finally, hit rate does not behave linearly. At a 90% hit rate the database handles 10% of reads; at 99% it handles 1%. The last few percentage points remove most of the load that was still left, which is why chasing them is worth real effort.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why deleting a cache entry is safer than updating it in place.</p>
+
+</div>
+
 The single highest-leverage rung: a Redis hit is sub-millisecond, versus single-digit-to-tens of milliseconds for a database query, and it removes load from the component that's hardest to scale.
 
 ### Strategies
@@ -177,6 +244,19 @@ LRU is the default; LFU is better when there's a stable hot set and occasional s
 
 ## 6. Rung 5: Edge / CDN
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Every other rung makes the system do less work. This one makes the data travel less distance.</p>
+<p>Some latency is not a software problem at all. A round trip from Sydney to Virginia costs on the order of 150 milliseconds because of distance and the speed of light in fibre, and no amount of server tuning touches it. The only fix is to keep a copy of the answer near the user, which is what a CDN is — a large set of caches spread geographically, sitting in front of your origin.</p>
+<p><code>Cache-Control</code> is how you talk to those caches. It carries how long a copy stays fresh, plus two behaviours worth knowing by name. <code>stale-while-revalidate</code> lets the cache hand the user the slightly old copy immediately and fetch a fresh one in the background, so nobody waits for the refresh. <code>stale-if-error</code> lets it keep serving the old copy while your origin is down, turning an outage into staleness.</p>
+<p><code>Vary</code> is the footgun. It tells the cache "this response differs by that request header", so <code>Vary: User-Agent</code> splits one cached object into thousands of near-identical variants and the hit rate collapses. Decide deliberately what belongs in the cache key.</p>
+<p>Invalidating dynamic content at the edge is done with tags, not URLs. Label each response with keys like <code>product-42</code>, and a price change purges everything carrying that label — you never have to enumerate the URLs that response might live at.</p>
+<p>Two things people underrate. The CDN collapses simultaneous misses for the same object into a single request to your origin, so a cold cache during a traffic spike does not become a flood. And dynamic responses are cacheable too: at 10,000 requests per second, even a 5-second lifetime turns 50,000 origin requests into 2.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why a 5-second cache lifetime on an API response is not too short to be worth setting.</p>
+
+</div>
+
 Push the copy geographically close to the user. This is the only rung that attacks **latency physics** rather than throughput: no amount of backend optimization beats the ~150ms round trip inherent in crossing an ocean, and a CDN removes that entirely for cacheable content.
 
 Beyond static assets, the parts worth knowing:
@@ -193,6 +273,17 @@ Beyond static assets, the parts worth knowing:
 
 ## 7. Rung 6: Sharding, and Why It's Last for Reads
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Sharding means splitting the data itself, so each machine holds a different slice and no machine holds all of it. For writes, and for datasets too large to fit anywhere, it is the only real answer. For reads it comes last, because replicas and caches give you read capacity without splitting anything.</p>
+<p>The cost lands on queries that do not name the shard key. If the request does not say which slice the answer is in, you must ask every slice and combine the answers — and you cannot reply until the <em>slowest</em> one has replied. That is why sharding makes tail latency worse rather than better: with ten shards each having a 1-in-100 chance of being slow, roughly one request in ten is slow, and the effect grows as you add shards. Horizontal scaling that punishes you for scaling horizontally is a real and counterintuitive property.</p>
+<p>You also give up joins and transactions that cross slices, and changing the split afterwards is a project rather than a setting.</p>
+<p>So the rule is: shard when the data no longer fits or the writes no longer fit — not because reads are slow. And when you do shard, choose the key so that the query you run most often lands on a single slice. That one choice is most of the outcome.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why the proportion of slow requests goes <em>up</em> as you add shards to a scatter-gather query.</p>
+
+</div>
+
 Sharding splits data across independent nodes. For **writes** and **dataset size** it's the only real answer. For **reads** it's a last resort, because replicas and caches give you read throughput without the costs sharding imposes:
 
 - Queries that don't include the shard key become **scatter-gather** — hit every shard, merge results, and now your p99 is the *slowest* shard's p99 (tail-latency amplification). A 10-shard fan-out where each shard has a 1% slow rate means ~10% of requests are slow.
@@ -206,6 +297,18 @@ Shard for reads only when the *dataset* no longer fits, the write volume exceeds
 ---
 
 ## 8. The Layered Read Path
+
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>A real read path is not one cache. It is a chain of them, and each step down the chain is slower, larger, and shared by more users than the step above. A request walks down until something can answer, and the answer is copied back up on the way out.</p>
+<p>Two rules fall out of that shape.</p>
+<p><strong>Each layer has to survive the layer below being empty.</strong> "What happens when the cache is empty?" needs an answer that is not "the database dies", because an empty cache is a normal event — a restart, a failover, a deploy.</p>
+<p><strong>An in-process cache is the fastest thing available and the least consistent.</strong> It lives in the application instance's own memory, so twenty instances hold twenty independent copies, and you cannot delete an entry from all of them at once. That restricts it to data where instances briefly disagreeing is acceptable, with a lifetime measured in seconds.</p>
+<p>That weakness is also its best property. Because every instance has its own copy, one extremely popular key cannot concentrate load on a single shared cache node. Putting a one-second in-process cache in front of Redis turns 50,000 requests per second on one key into about 20.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why an in-process cache is the right tool for a hot key and the wrong tool for data that must be consistent across the fleet.</p>
+
+</div>
 
 Every mature read path is a cascade, and being able to draw it with latencies is a strong whiteboard moment:
 
@@ -238,6 +341,17 @@ The design rules that follow:
 
 ## 9. Precomputation, Materialized Views, and CQRS
 
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Every rung so far makes the read faster. This one removes the work from the read entirely, by doing it earlier — at write time.</p>
+<p>The reason it pays is the ratio. If a piece of data is read a hundred times for every time it changes, then computing the answer once when it changes and reading it a hundred times is an enormous saving, even if the computation becomes ten times more expensive. Write-time work also happens where no user is sitting and waiting for it.</p>
+<p>The forms are the same idea at different scales. <strong>Fan-out-on-write</strong> puts a copy of a new post into each follower's prepared timeline, so reading a feed becomes fetching one list rather than querying across everyone you follow. <strong>Precomputed top-K</strong> stores the answer at each node so a query is a lookup rather than a traversal. <strong>CQRS</strong> keeps the authoritative, normalized data for writing, and builds separate copies shaped for each way you read, kept in step by events. <strong>Purpose-built stores</strong> are the same move across systems: full-text search into a search engine, similarity into a vector store, time series into a time-series database, instead of forcing one database to answer every kind of question well.</p>
+<p>The bill is always the same three items: writes cost more, the same information is stored several times, and every copy is behind the source by some amount. Read latency is what you buy with them.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why fan-out-on-write is clearly right at a 100:1 read/write ratio and clearly wrong at 1:1.</p>
+
+</div>
+
 The deepest form of read scaling: **stop computing at read time.** Move work to write time, where volume is lower and latency doesn't face a user.
 
 - **Fan-out-on-write** for feeds: when a user posts, write into each follower's precomputed timeline, so a feed read is one sequential fetch instead of a query across everyone you follow. Cost: expensive writes, and the celebrity problem. [`social-feed §1`](../interviews/social-feed/deep-dive.md#1-fan-out-models) · [`§3 Timeline Caching`](../interviews/social-feed/deep-dive.md#3-timeline-caching)
@@ -250,6 +364,18 @@ The universal tradeoff to state: precomputation trades **write cost, storage, an
 ---
 
 ## 10. Pagination Is a Read-Scaling Problem
+
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Pagination looks like an API detail and is actually a read-scaling decision.</p>
+<p><code>OFFSET 1000000 LIMIT 20</code> asks the database to produce a million rows in sorted order and throw all of them away before returning the twenty you wanted. The cost grows with how far the user has scrolled, so the feature gets slower the more someone uses it.</p>
+<p>There is a second problem, and it is a correctness bug rather than a performance one. An offset is a count from the start of a list that is still changing. If new rows arrive at the top while the user reads, everything shifts down, and page 2 returns rows they already saw on page 1. Deletions produce the mirror image — rows that are skipped and never shown at all.</p>
+<p>Cursor pagination fixes both by naming a position instead of counting to one. The client sends back the sort values of the last row it saw, and the next page is "the rows after this point". The database jumps straight there, so the cost no longer depends on depth, and inserts elsewhere in the list cannot change what "after this point" means.</p>
+<p>The tie-breaker matters. If you sort only by a timestamp and several rows share one, the boundary between pages is ambiguous and rows get silently skipped. Including a unique column in both the sort and the cursor makes every position unambiguous.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> why offset pagination shows the same item twice, and why a bare timestamp is not a safe cursor.</p>
+
+</div>
 
 `OFFSET 1000000 LIMIT 20` forces the database to produce and discard a million rows. Deep pagination is a self-inflicted read-scaling failure.
 
@@ -270,6 +396,19 @@ Cursor pagination is also **stable under concurrent inserts** — offset paginat
 ---
 
 ## 11. Failure Modes
+
+<div style="font-size:0.88em; font-style:italic; background:rgba(128,128,128,0.10); border-left:3px solid rgba(128,128,128,0.35); border-radius:4px; padding:0.7em 1.15em; opacity:0.85;">
+
+<p style="margin-top:0;"><strong>In plain terms</strong></p>
+<p>Most read-path failures are the same accident with different triggers: something that was absorbing the majority of the traffic stops absorbing it, and the database receives load it was never sized for.</p>
+<p>Three versions are worth telling apart. A <strong>stampede</strong> is one popular key expiring, so every request for it misses in the same instant and they all reach the database together. A <strong>cold cache</strong> is the whole cache being empty at once after a restart or failover — if it had been absorbing 95% of reads, the database suddenly sees twenty times its normal load. <strong>Penetration</strong> is requests for keys that do not exist, which an ordinary cache-aside path never stores and which therefore miss every single time; an attacker can generate them freely.</p>
+<p>A <strong>hot key</strong> is a different shape and worth not confusing with those. The total load may be perfectly fine. The problem is that it is concentrated on one key, that key lives on one cache node, and that node is the ceiling.</p>
+<p>The fixes fall into three families, and naming the family is more useful than memorizing the techniques:</p>
+<ul><li><strong>Make only one request do the work.</strong> A per-key lock so one caller refills while the rest wait, or the CDN collapsing simultaneous misses into a single origin fetch.</li><li><strong>Spread the moment.</strong> Add randomness to expiry times so related keys do not expire together, refresh slightly early at a random offset, stagger deploys so instances do not all start cold at once.</li><li><strong>Serve something imperfect rather than nothing.</strong> Hand back the stale value while refreshing behind it, cache the fact that a key does not exist, return partial results when one shard is slow.</li></ul>
+<p>And one operational point that carries more weight than any single technique: either capacity-plan the database for a cache-loss event, or rate-limit the path that refills the cache. Recovery is precisely the moment when the system is least able to absorb a flood.</p>
+<p style="margin-bottom:0;"><strong>You've got it if you can say:</strong> which of these failures is about everything happening at the same <em>moment</em>, and which is about load landing in the same <em>place</em>.</p>
+
+</div>
 
 | Failure | Mechanism | Mitigation |
 |---|---|---|
@@ -443,6 +582,7 @@ It's wrong whenever the query is on the hot path, because p99 becomes the *maxim
 
 ## Related
 
+- **Appendix:** [Extra Details §1 — Index Internals: Covering, Primary, and Clustered](./extra-details.md#1-index-internals-covering-primary-and-clustered) (the mechanism under §2's three lines on covering indexes)
 - **Patterns:** [Scaling Writes](./scaling-writes.md) (the other half — check which side is actually saturated) · [Handling Large Blobs](./large-blobs.md) (reads too big to proxy) · [Real-Time Updates](./realtime-updates.md) (push as an optimization over this pull path)
 - **Fundamentals:** [bloom-filters](../fundamentals/bloom-filters.md) · [leader-and-follower](../fundamentals/leader-and-follower.md) · [read-repair](../fundamentals/read-repair.md) · [pacelc-theorem](../fundamentals/pacelc-theorem.md) · [Use_Cases_for_Caching](../fundamentals/Use_Cases_for_Caching.md)
 - **Topics:** [`distributed-caching`](../interviews/distributed-caching/README.md) · [`cdn-edge`](../interviews/cdn-edge/README.md) · [`sharding-replication`](../interviews/sharding-replication/README.md) · [`url-shortener`](../interviews/url-shortener/README.md) · [`social-feed`](../interviews/social-feed/README.md) · [`search-autocomplete`](../interviews/search-autocomplete/README.md)
