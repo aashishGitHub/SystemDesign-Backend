@@ -1,70 +1,285 @@
 # Topic Authoring Guide — How to Build an `interviews/<topic>/` Folder
 
-> **Purpose:** a repeatable spec for writing a new system-design topic so every folder looks, reads, and teaches the same way.
-> **Canonical exemplar:** [`interviews/video-streaming/`](../interviews/video-streaming/). Second reference: [`interviews/ride-sharing/`](../interviews/ride-sharing/).
-> **Audience of the content:** Senior / Staff backend engineers prepping HLD + system-design interviews.
-> **Companions:** [`RADIO_FRAMEWORK.md`](./RADIO_FRAMEWORK.md) — how to *perform* in the room · [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md) — the primitive→AWS→native mapping every topic must use · [`../patterns/README.md`](../patterns/README.md) — the reusable sub-problems every topic must declare.
+> **Purpose:** a repeatable spec for writing a system-design topic.
+> Every folder should look, read, and teach the same way.
+>
+> **Who reads the content:** Mid-level engineers prepping HLD interviews for Staff roles.
+> **What they do with it:** *speak* it and *draw* it under time pressure. Nothing else.
+>
+> **Canonical exemplar:** [`interviews/video-streaming/`](../interviews/video-streaming/). Second: [`interviews/ride-sharing/`](../interviews/ride-sharing/).
+> **Style model (external):** the Hello Interview Cassandra deep dive — plain headings, analogy first, few but genuinely simple diagrams, and a dedicated "in an interview" section.
+> **Companions:** [`RADIO_FRAMEWORK.md`](./RADIO_FRAMEWORK.md) — how to *perform* in the room · [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md) — the primitive→AWS→native mapping · [`../patterns/README.md`](../patterns/README.md) — the reusable sub-problems.
 
 ---
 
-## 0. The three rules that matter most
+## 0. The six rules that matter most
 
 ### Rule 1 — Lead with the central split
 
-**Find the topic's central split (its organizing insight) and lead with it.** Every strong topic hangs off one mental model that everything else clips onto:
+Find the topic's organizing insight. Lead with it. Everything else clips onto it.
 
 | Topic | Central split you lead with |
 |---|---|
-| Video streaming | **Write path** (upload→transcode→store, async, throughput-bound) vs **read path** (play→CDN→viewer, latency-bound) |
-| Ride sharing | **Three planes**: location ingest (write-heavy, ephemeral) · matching (latency-bound) · trip+tracking (durable + real-time) |
-| KV store | Consistency/availability tradeoff + partitioning + replication |
-| Storage engines | LSM-tree (write-optimized) vs B-tree (read-optimized) — the RUM conjecture |
+| Video streaming | **Write path** (upload→transcode→store, async) vs **read path** (play→CDN→viewer, latency-bound) |
+| Ride sharing | **Three planes**: location ingest · matching · trip tracking |
+| KV store | Consistency vs availability, then partitioning, then replication |
+| Storage engines | LSM-tree (write-optimized) vs B-tree (read-optimized) |
 
-If you can't name the split in one sentence, you're not ready to write the folder yet. Diagram 1 and the simple-diagram both *are* that split.
+Say the split in one sentence. If you can't, you're not ready to write the folder.
 
-### Rule 2 — Name the patterns; don't re-explain them
+Diagram 1 *is* that split. So is the simple diagram. So is the master diagram.
 
-Every topic is an assembly of [`patterns/`](../patterns/README.md) — recurring sub-problems that already have their own write-ups. The folder must **declare which patterns it uses and link into them**, rather than re-deriving the same ladder for the fifth time.
+### Rule 2 — Write for the mouth, not the page
 
-- The README carries a **Patterns in play** table (see §2).
-- Answers that hit a pattern link to the exact pattern section instead of duplicating it — e.g. *"this is rung 1 of the contention ladder — a conditional write,"* linking `[contention ladder](../../patterns/dealing-with-contention.md#4-rung-1-conditional--atomic-writes)` (paths in this guide's examples are written **relative to `interviews/<topic>/`**, which is where they'll live).
-- If the topic needs a recurring sub-problem that **isn't** in `patterns/` yet, add it to the gap list in [`patterns/README.md`](../patterns/README.md#gaps--recurring-sub-problems-not-yet-written-up) rather than burying the only copy of that reasoning inside one topic.
+The reader will say these words out loud to an interviewer. Write sentences they can say.
 
-**Convention, repo-wide: cross-link, don't duplicate.** Concept depth lives in `fundamentals/`, sub-problem depth in `patterns/`, system depth in `interviews/`.
+Short sentences. One idea each. Active voice. Everyday words.
 
-### Rule 3 — Every tech choice is primitive → AWS → native
+Full rules and the ban list are in [§1](#1-house-style--the-sentence-rules). They are not optional polish. They are the house style.
 
-The repo is **AWS-annotated, not AWS-only**. For each component you name, state three things in this order:
+> **The test:** read the paragraph aloud at interview pace. If you stumble, run out of breath, or have to re-read a line, rewrite it.
+
+### Rule 3 — Every diagram must be drawable by hand
+
+A diagram nobody can reproduce with a pen is decoration.
+
+Default every diagram to **Tier D (drawable)**: at most 9 boxes, at most 12 arrows, drawn in 90 seconds, readable in black and white. Rich annotated diagrams are **Tier R (reference)** and are allowed in only three places.
+
+Full spec in [§2](#2-diagram-rules--tier-d-and-tier-r). Use **more** diagrams than feels necessary — at least one per question level.
+
+### Rule 4 — Name the patterns; don't re-explain them
+
+Every topic assembles [`patterns/`](../patterns/README.md) — recurring sub-problems that already have write-ups.
+
+- The README carries a **Patterns in play** table (see [§4](#4-file-by-file-spec)).
+- An answer that hits a pattern links to the exact section. It does not re-derive it. Example: *"this is rung 1 of the contention ladder — a conditional write,"* linking `[contention ladder](../../patterns/dealing-with-contention.md#4-rung-1-conditional--atomic-writes)`. Paths in this guide are relative to `interviews/<topic>/`, where they'll live.
+- Need a sub-problem that isn't in `patterns/` yet? Add it to the gap list in [`patterns/README.md`](../patterns/README.md#gaps--recurring-sub-problems-not-yet-written-up). Don't bury the only copy inside one topic.
+
+**Repo-wide: cross-link, don't duplicate.** Concept depth lives in `fundamentals/`. Sub-problem depth lives in `patterns/`. System depth lives in `interviews/`.
+
+### Rule 5 — Every tech choice is primitive → AWS → native
+
+The repo is AWS-annotated, not AWS-only. For each component, say three things in this order:
 
 ```
-1. the PRIMITIVE   — the property you actually need, and the number that forces it
-2. the AWS SERVICE — the managed implementation (this is the fluency signal)
-3. the NATIVE/OSS  — the swap, which proves it isn't a lock-in decision
+1. the PRIMITIVE   — the property you need, and the number that forces it
+2. the AWS SERVICE — the managed implementation (the fluency signal)
+3. the NATIVE/OSS  — the swap, which proves it isn't lock-in
 ```
 
-> *"I need an at-least-once work queue with a visibility timeout and a DLQ, because a transcode takes ~4 min and a worker crash must not lose the job. On AWS that's SQS; self-hosted it's RabbitMQ, or Kafka if I also need replay."*
+> *"I need an at-least-once queue with a visibility timeout and a DLQ. A transcode takes ~4 minutes. A worker crash must not lose the job. On AWS that's SQS. Self-hosted it's RabbitMQ, or Kafka if I also need replay."*
 
-Full mapping tables, per-service gotchas, and the "what AWS does *not* give you" list live in [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md). Pull from there rather than inventing a new table per topic. Primitive-first ordering is deliberate: it keeps the same sentence usable in a Google or Meta interview, where an AWS catalog scores nothing.
+Note the shape: short sentences, number in the middle, service name last.
+
+Mapping tables and per-service gotchas live in [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md). Pull from there. Don't invent a new table per topic. Primitive-first ordering is deliberate — the same sentence still works at Google or Meta, where an AWS catalog scores nothing.
+
+### Rule 6 — Deep material stays marked as deep-dive
+
+Depth is welcome. Unmarked depth is not.
+
+**Default home:** [`deep-dive.md`](#deep-divemd). Anything you would *not* say in a 45-minute interview belongs there.
+
+**If deep material must appear in another file**, wrap it in a marked, collapsed block so the main line of reading stays simple:
+
+````markdown
+<details>
+<summary>🔴 <b>deep-dive</b> — how the compaction scheduler actually picks SSTables</summary>
+
+...the deep content...
+
+</details>
+````
+
+Rules for the marker:
+1. The word **`deep-dive`** appears in every such summary line. Grep-able on purpose.
+2. The block is **collapsed by default**. A first-pass reader skips it and loses nothing.
+3. It never carries load-bearing content. If an answer *needs* it, the answer is wrong — say the short version inline.
+4. `README.md`, `simple-diagram.md`, and `questions.md` carry **no** deep blocks at all. They are the shallow end.
+
+Inside `deep-dive.md`, mark every section with its depth tier: 🟢 beginner · 🟡 senior · 🔴 staff/architect. See [§4](#deep-divemd).
 
 ---
 
-## 1. Folder anatomy
+## 1. House style — the sentence rules
 
-Every topic folder contains these files (create in this order):
+This governs every `.md` file in a topic folder.
+
+### 1.1 Sentences
+
+| Rule | Do | Don't |
+|---|---|---|
+| One idea per sentence | "The CDN caches the segment. The next viewer gets it in 20 ms." | "The CDN caches the segment, meaning that subsequent viewers, provided they hit the same edge, will be served in roughly 20 ms." |
+| Aim for ≤ 15 words. Hard cap 20 | "Writes go to the leader. Reads can go anywhere." | — |
+| Active voice, named actor | "The worker acks the message." | "The message is acked." |
+| Answer first, reason second | "Use a queue. A transcode takes 4 minutes. An HTTP request can't wait." | "Because transcoding is a long-running operation, it follows that…" |
+| Full stops over commas | Two short sentences | One sentence with three clauses |
+| Max 3 sentences per paragraph | — | Wall of text |
+
+### 1.2 Words
+
+Replace these on sight:
+
+| Don't write | Write |
+|---|---|
+| leverage, utilize | use |
+| facilitate, enable | let |
+| in order to | to |
+| subsequently | then |
+| thereby, hence | so |
+| is able to | can |
+| a number of | some, or the actual number |
+| prior to | before |
+| in the event that | if |
+| it should be noted that | *(delete it)* |
+| performant | fast, or the p99 number |
+
+### 1.3 Jargon
+
+Gloss every term on first use in a file. Once. In brackets. Then use it freely.
+
+> "We need a **quorum** (enough replicas agreeing) before we ack the write."
+
+Never introduce two new terms in one sentence.
+
+### 1.4 Numbers beat adjectives
+
+"Very fast" says nothing. "p99 is 200 ms" says everything.
+
+Every claim of scale, speed, or size carries the number and where it came from. See [§6](#6-accuracy-rules-non-negotiable) for how to hedge numbers honestly.
+
+### 1.5 Headings
+
+Plain and descriptive. "How replication works", not "The dance of the replicas".
+
+A reader scanning only your headings should get the outline of the topic.
+
+### 1.6 Analogy first, mechanics second
+
+When a concept is new, open with one everyday analogy. One sentence. Then the mechanics.
+
+> "A Bloom filter is a bouncer with a bad memory. It can say 'definitely not on the list'. It can never say 'definitely on the list'."
+
+Keep the analogy short. Don't extend it past its usefulness.
+
+---
+
+## 2. Diagram rules — Tier D and Tier R
+
+**Use more diagrams than feels necessary.** A diagram every two screens is a good rhythm. Minimum: one per question level, plus Diagram 1, plus the master diagram.
+
+### 2.1 Tier D — drawable (the default)
+
+Tier D is what you actually draw on a whiteboard. Every diagram is Tier D unless explicitly marked otherwise.
+
+Constraints — all of them, not most:
+
+| Constraint | Limit |
+|---|---|
+| Boxes | ≤ 9 |
+| Arrows | ≤ 12 |
+| Words per box label | ≤ 4 |
+| Words per arrow label | ≤ 5 |
+| Shapes used | 5 max — box, cylinder, stadium, diamond, queue |
+| Time to draw by hand | ≤ 90 seconds |
+| Colour | **must be readable with none** |
+| Nesting | ≤ 2 subgraphs, no nesting inside a subgraph |
+
+On colour: colour helps the reader on screen. It must never *carry* meaning, because a whiteboard marker is black. If removing colour makes the diagram ambiguous, the diagram is wrong.
+
+### 2.2 Every Tier D diagram carries two companions
+
+This is the part that makes a diagram teachable instead of just visible.
+
+**1. Draw order** — the strokes, numbered, in the order your hand makes them.
+
+**2. Say while drawing** — one short spoken line per stroke.
+
+````markdown
+```mermaid
+<the Tier D diagram>
+```
+
+**Draw order (~60s)**
+1. Two stick figures far left and far right. Label them Creator and Viewer.
+2. Box top-middle: "Upload API". Arrow from Creator.
+3. Cylinder under it: "Blob store". Arrow down.
+4. Box right of the cylinder: "Transcoder". Arrow across.
+5. Cylinder: "Segments". Arrow down.
+6. Box far right: "CDN". Arrow from Segments, then to Viewer.
+
+**Say while drawing**
+1. "A creator uploads. A viewer watches. Two different problems."
+2. "The upload hits an API. The API doesn't touch the bytes."
+3. "The raw file lands in blob storage."
+4. "That fires a transcode job. This part is slow and async."
+5. "Out come segments, at several qualities."
+6. "The CDN serves those segments. This part must be fast."
+````
+
+Keep the spoken lines under 12 words each. They are a script, not captions.
+
+### 2.3 The pen version (required in `simple-diagram.md`)
+
+Mermaid renders. Pens don't. For the first diagram of `simple-diagram.md`, also include the ASCII sketch — literally the shape your hand makes:
+
+```text
+ Creator ──▶ [Upload API] ──▶ (raw blob)
+                                  │
+                                  ▼
+                            [Transcoder]
+                                  │
+                                  ▼
+                            (segments) ──▶ [CDN] ──▶ Viewer
+```
+
+Five to ten lines. No box-drawing art beyond this. It exists to prove the diagram survives a whiteboard.
+
+### 2.4 Tier R — reference (allowed in exactly three places)
+
+Tier R is annotated and dense: real service names, protocols, TTLs, colour by meaning.
+
+Allowed **only** in:
+1. The **detailed** second half of `simple-diagram.md`.
+2. `deep-dive.md`.
+3. The one-page master diagram ([§4.1](#41-the-one-page-master-diagram)).
+
+Every Tier R diagram is tagged, directly above the fence:
+
+```markdown
+> **Tier R — reference only. Don't draw this in the room. Draw Diagram 1 and talk to it.**
+```
+
+Anywhere else, Tier R is a bug.
+
+### 2.5 Diagram type by content
+
+| Content | Type |
+|---|---|
+| Architecture, dataflow | `flowchart` |
+| Protocol, handshake, retry loop | `sequenceDiagram` |
+| Lifecycle, status machine | `stateDiagram-v2` |
+
+Mix them. A topic with eleven flowcharts and nothing else is under-thought.
+
+---
+
+## 3. Folder anatomy
+
+Every topic folder contains these files. Create in this order:
 
 | Order | File | Purpose | Required? |
 |---|---|---|---|
-| 1 | `README.md` | Front door: target level, how-to-use, learning path, problem statement, "how a senior thinks". | ✅ |
-| 2 | `simple-diagram.md` | Bare-minimum mental model + a detailed version with concrete services/protocols. | ✅ |
-| 3 | `questions.md` | Leveled, question-first interview grill (L1→L8 + bonus). | ✅ |
-| 4 | `answers.md` | One answer per question, each with a table **or** code + a **Key takeaway** line; ends with a cheat sheet. | ✅ |
-| 5 | `diagrams.md` | 8–12 interview-ready Mermaid diagrams, each mapped to questions — **plus the one-page master diagram as the final section** (§2.1). | ✅ |
-| 6 | `deep-dive.md` | Beginner → Senior → Architect depth, failure modes, real-world examples. | ✅ |
-| 7 | `conducive-sentences.md` | Plain-English prose retelling of every answer, each section bridging to the next. | optional |
+| 1 | `README.md` | Front door: level, how to use, problem, patterns, "in an interview". | ✅ |
+| 2 | `simple-diagram.md` | The drawable mental model, plus a detailed reference version. | ✅ |
+| 3 | `questions.md` | Leveled, question-first grill (L1→L8 + bonus). | ✅ |
+| 4 | `answers.md` | One answer per question. Table or code. **Key takeaway** line. Cheat sheet at the end. | ✅ |
+| 5 | `diagrams.md` | 12–16 Tier D diagrams, each mapped to questions — plus the master diagram last. | ✅ |
+| 6 | `deep-dive.md` | 🟢🟡🔴 depth, failure modes, real-world examples. All deep material lives here. | ✅ |
+| 7 | `conducive-sentences.md` | Plain-English retelling of every answer, each section bridging to the next. | optional |
 
-Then update [`interviews/ROADMAP.md`](../interviews/ROADMAP.md): dashboard counts, the topic's status line, and the quick-reference table. Also update the reverse index in [`patterns/README.md`](../patterns/README.md) with a row for the new topic.
+Then update [`interviews/ROADMAP.md`](../interviews/ROADMAP.md): dashboard counts, status line, quick-reference table. Also add a row to the reverse index in [`patterns/README.md`](../patterns/README.md).
 
-**Where each layer's depth belongs** (so files don't duplicate each other):
+**Where each layer's depth belongs**, so files don't duplicate each other:
 
 ```
 fundamentals/<concept>.md   one concept, 2 min          quorum, lease, fencing, WAL, Bloom filter
@@ -76,17 +291,19 @@ docs/RADIO_FRAMEWORK.md     how to perform in the room  R·A·D·I·O timeboxing
 
 ---
 
-## 2. File-by-file spec
+## 4. File-by-file spec
 
 ### `README.md`
+
 Sections, in order:
+
 1. **Title** — `# System Design: <Topic> (<Real-world examples>)`.
-2. **Target + Style** blockquote — who it's for; "Interview-grill format — question first, then defended choices."
-3. **How to Use This Guide** — numbered steps that name every file (start with `simple-diagram.md`, attempt `questions.md` cold, check `answers.md`, whiteboard with `diagrams.md`, go deep with `deep-dive.md`, and **revise from the one-page master diagram** at the end of `diagrams.md`).
-4. **Learning Path** table — `| Level | Topic | You'll Learn |` matching the question levels.
-5. **Files** table — one row per file with a one-line purpose. Mark the start-here file.
-6. **Problem Statement** blockquote — the ask + a bulleted **Key Constraints** list with real numbers (scale, latency SLA, availability, durability).
-7. **Patterns in play** table — which [`patterns/`](../patterns/README.md) this topic assembles, marking **●** central / **○** present, each linking to the pattern file *and* to the levels/questions where it appears. Keep it consistent with the reverse index in `patterns/README.md`:
+2. **Target + Style** blockquote — who it's for. "Interview-grill format — question first, then defended choices."
+3. **How to Use This Guide** — numbered steps naming every file. Start with `simple-diagram.md`. Attempt `questions.md` cold. Check `answers.md`. Whiteboard from `diagrams.md`. Go deep with `deep-dive.md`. Revise from the master diagram.
+4. **Learning Path** table — `| Level | Topic | You'll Learn |`, matching the question levels.
+5. **Files** table — one row per file, one line each. Mark the start-here file.
+6. **Problem Statement** blockquote — the ask, then a bulleted **Key Constraints** list with real numbers (scale, latency SLA, availability, durability).
+7. **Patterns in play** table — which [`patterns/`](../patterns/README.md) this topic assembles. **●** central, **○** present. Link the pattern file *and* the levels where it appears. Keep it consistent with the reverse index:
 
    ```markdown
    | Pattern | Role | Where it shows up here |
@@ -95,92 +312,154 @@ Sections, in order:
    | [Multi-Step Processes](../../patterns/multi-step-processes.md) | ● central | L5 Q25–Q31 — fulfillment saga + outbox |
    | [Scaling Reads](../../patterns/scaling-reads.md) | ○ present | L3 Q12–Q17 — browse path caching |
    ```
-8. **How a Senior Engineer Thinks About This** — 2–4 prose paragraphs that walk the central split and the top 2–3 insights. This is the highest-signal section; write it last, after the answers exist.
+
+8. **`<Topic>` in an Interview** — *required*. Three sub-sections, all short:
+
+   ```markdown
+   ### When to reach for this design
+   - bullet, one line each, the trigger phrase an interviewer says
+
+   ### Where it breaks down (know the limits)
+   - bullet, one line each, the honest limitation and what you'd swap to
+
+   ### The five sentences that score
+   1. …  ← the exact lines to say, ≤ 15 words each
+   ```
+
+   This is modelled on the Hello Interview "X in an Interview" section. It separates strategy from mechanics, and it's the part a reader uses on the morning of the loop.
+
+9. **How a Senior Engineer Thinks About This** — 2–4 short paragraphs walking the central split and the top 2–3 insights. Highest-signal section. Write it **last**, after the answers exist.
+
+No `deep-dive` blocks in this file (Rule 6).
 
 ### `simple-diagram.md`
-Two diagrams, plainest first:
-1. **Simple mental model** — a `flowchart` with only the essential boxes, numbered edges telling the story. Follow with:
-   - **"The N components to remember"** table (`| Component | Job (one line) |`).
-   - **"The one idea that ties it together"** — a single bold paragraph stating the central split.
-2. **Detailed diagram** — same flows, now labeled with concrete services (name real tech) and a note that these are *defensible* picks, not gospel. Follow with:
-   - A **service cheat-sheet** table — **four columns, primitive first** (see Rule 3 in §0). Exemplar: [`interviews/video-streaming/simple-diagram.md`](../interviews/video-streaming/simple-diagram.md).
+
+Two diagrams, plainest first.
+
+**1. Simple mental model — Tier D.** A `flowchart` with only the essential boxes. Numbered edges telling one story. Then, in order:
+   - **The pen version** — the ASCII sketch ([§2.3](#23-the-pen-version-required-in-simple-diagrammd)).
+   - **Draw order** and **Say while drawing** ([§2.2](#22-every-tier-d-diagram-carries-two-companions)).
+   - **"The N components to remember"** table — `| Component | Job (one line) |`.
+   - **"The one idea that ties it together"** — one bold paragraph stating the central split. Three sentences max.
+
+**2. Detailed diagram — Tier R.** Same flows, now with concrete services and protocols. Tag it per [§2.4](#24-tier-r--reference-allowed-in-exactly-three-places). Note that the picks are *defensible*, not gospel. Then:
+   - A **service cheat-sheet** table — four columns, primitive first (Rule 5). Exemplar: [`interviews/video-streaming/simple-diagram.md`](../interviews/video-streaming/simple-diagram.md).
 
      ```markdown
      | Concept | Primitive (say this first) | AWS service | Native / OSS | One-line why |
      |---|---|---|---|---|
      | Big-file upload | resumable multipart upload, bytes bypass the API | **S3 Multipart + presigned URL** | MinIO | Parallel parts; app server out of the data path |
-     | Work queues | at-least-once queue, per-message retry + DLQ | **SQS** (one per job type) | RabbitMQ | Small failure unit, one poison job can't block others |
+     | Work queues | at-least-once queue, per-message retry + DLQ | **SQS** (one per job type) | RabbitMQ | Small failure unit; one poison job can't block others |
      ```
 
-     Do **not** invent a new mapping table per topic — pull rows from [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md) so the vocabulary stays consistent, and add any genuinely new row back into that file.
-   - An **AWS gotchas for this topic** bullet list (2–5 items) — the quota/failure-mode traps for the services just named (e.g. "DynamoDB per-partition write ceiling → write-shard the hot key"; "SQS visibility timeout must exceed p99 job duration"). Pull from `AWS_SERVICE_MAP.md` §3.
-   - A **protocols worth naming** bullet list.
+     Pull rows from [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md) so the vocabulary stays consistent. Push genuinely new rows back into that file.
+   - An **AWS gotchas for this topic** list, 2–5 bullets. The quota and failure-mode traps for the services just named. Example: "SQS visibility timeout must exceed p99 job duration." Pull from `AWS_SERVICE_MAP.md` §3.
+   - A **protocols worth naming** list.
 
 ### `questions.md`
+
 - Header blockquote: "Attempt all questions before reading answers.md · work level-by-level · speak answers aloud."
-- **8 levels**, each `## Level N — <Name>` with an italic *Goal:* line. Level 1 = fundamentals, Level 8 = architect/staff.
+- **8 levels**. Each `## Level N — <Name>` with an italic *Goal:* line. Level 1 = fundamentals. Level 8 = architect/staff.
 - Questions numbered `**Q1.**`, `**Q2.**`… continuously across levels.
-- Include **failure-mode questions** (`*(Failure mode)*` or a dedicated failure-mode Q per level) — "X crashes at 2 AM, what do users see and what's your response?"
-- End with **Bonus — questions a senior raises unprompted** (`**QB1.**`…) — the ownership-signal questions.
+- Keep each question to one or two short sentences. A question you have to parse twice tests reading, not design.
+- Include **failure-mode questions** — mark `*(Failure mode)*`. "X crashes at 2 AM. What do users see? What do you do?"
+- End with **Bonus — questions a senior raises unprompted** (`**QB1.**`…).
+
+No `deep-dive` blocks in this file (Rule 6).
 
 ### `answers.md`
+
 - Header: "Keyed to questions.md. Each answer includes either code or a comparison table."
-- One `### AN. <short title>` per question, **same numbering as questions.md**.
-- Every answer has **a comparison table or a code/pseudocode block** (prefer a table for tradeoffs, code for mechanics) — never prose-only.
-- Every answer ends with a bold **Key takeaway:** one-sentence line — the thing to remember under pressure.
-- When an answer is an instance of a pattern, **link the pattern section rather than re-deriving it** (Rule 2) — `[contention ladder](../../patterns/dealing-with-contention.md#4-rung-1-conditional--atomic-writes)`. The answer keeps the topic-specific part; the general ladder stays in one place.
-- Ends with a **⚡ Quick Revision Cheatsheet** containing five sub-sections:
-  - **Scale numbers** (back-of-envelope, with the math shown)
-  - **Key technology choices** — `| Component | Primitive / why | AWS | Native / OSS |`. The primitive column is the one you say out loud; the last two are the fluency evidence and the anti-lock-in swap.
-  - **Patterns used** (one line each, linked — mirrors the README's Patterns-in-play table)
-  - **Canonical tradeoffs to memorize** (bulleted `A vs B: upside vs upside`)
-  - **Common interview mistakes to avoid** (bulleted, including the topic's AWS traps)
+- One `### AN. <short title>` per question. Same numbering as `questions.md`.
+- **Open every answer with the one-sentence answer.** Then the reasoning. Then the table or code. An interviewer hears the first sentence and knows if you're right.
+- Every answer has a **comparison table or a code/pseudocode block**. Table for tradeoffs, code for mechanics. Never prose-only.
+- Every answer ends with a bold **Key takeaway:** line. One sentence, ≤ 20 words. This is the thing to say under pressure.
+- Pattern instances **link** the pattern section rather than re-deriving it (Rule 4).
+- Deep material goes in a collapsed `deep-dive` block (Rule 6), or into `deep-dive.md`.
+- Ends with a **⚡ Quick Revision Cheatsheet** with five sub-sections:
+  - **Scale numbers** — back-of-envelope, math shown.
+  - **Key technology choices** — `| Component | Primitive / why | AWS | Native / OSS |`.
+  - **Patterns used** — one line each, linked. Mirrors the README table.
+  - **Canonical tradeoffs to memorize** — `A vs B: upside vs upside`.
+  - **Common interview mistakes to avoid** — including the topic's AWS traps.
 
 ### `diagrams.md`
-- Header with a "start with Diagram 1" note + a **Reference** line linking `answers.md`/`simple-diagram.md` + a **Cross-links** line to related topic folders.
-- **8–12 diagrams.** Diagram 1 is always the central split. Each diagram block is:
+
+- Header with a "start with Diagram 1" note, a **Reference** line linking `answers.md` / `simple-diagram.md`, and a **Cross-links** line to related topics.
+- **12–16 diagrams.** All Tier D. Diagram 1 is always the central split. At least one diagram per question level.
+- Each diagram block is:
   1. `## Diagram N — <Title>`
   2. A `> **When to use:**` blockquote naming the exact question numbers it serves.
-  3. The ```mermaid block.
-  4. A **What the interviewer is checking:** bullet list (3–4 bullets on the *signal*, not just the content).
-- Mix diagram types to fit the content: `flowchart` for architecture/dataflow, `sequenceDiagram` for protocols/handshakes/offer-loops, `stateDiagram-v2` for lifecycles/state machines.
-- Then a **Quick Interview Reference**: scale-numbers table, a domain quick-ref table, canonical tradeoffs, common mistakes.
-- **Finally — and this is required — the one-page master diagram.** See §2.1.
+  3. The ```mermaid block (Tier D constraints, [§2.1](#21-tier-d--drawable-the-default)).
+  4. **Draw order** and **Say while drawing** ([§2.2](#22-every-tier-d-diagram-carries-two-companions)).
+  5. A **What the interviewer is checking:** list — 3–4 bullets on the *signal*, not the content.
+- Mix diagram types ([§2.5](#25-diagram-type-by-content)).
+- Then a **Quick Interview Reference**: scale numbers, a domain quick-ref table, canonical tradeoffs, common mistakes.
+- **Finally — required — the one-page master diagram.** See [§4.1](#41-the-one-page-master-diagram).
+
+### `deep-dive.md`
+
+This file is the home for all depth. Open it with a banner:
+
+```markdown
+> **deep-dive** — everything here is beyond a 45-minute interview answer.
+> Read it to be un-rattleable in follow-ups, not to recite it.
+```
+
+- Progression per section: 🟢 beginner → 🟡 senior → 🔴 staff/architect. Every section carries all three.
+- 🟢 uses a daily-life analogy, no jargon ([§1.6](#16-analogy-first-mechanics-second)).
+- 🟡 has at least one code block and one comparison table.
+- 🔴 has capacity math, a quantified failure mode, or a production config decision.
+- Real-world implementations, quantified failure modes, production tradeoffs.
+- Closing cheat sheet, ≥ 15 rows.
+
+The sentence rules ([§1](#1-house-style--the-sentence-rules)) still apply here. Depth is in the *content*, never in the sentence length.
 
 ---
 
-### §2.1 The One-Page Master Diagram (final section of `diagrams.md`)
+### 4.1 The One-Page Master Diagram
 
-**The problem it solves.** The night before an interview you do not want to re-read eleven diagrams, forty answers, and a deep-dive. You want **one artifact that reconstructs the entire topic from a single screen** — the split, the components, the AWS names, the patterns, the numbers, and the two failure modes that carry the signal.
+*(final section of `diagrams.md`)*
+
+**The problem it solves.** The night before an interview you won't re-read eleven diagrams and forty answers. You want **one artifact that rebuilds the whole topic from one screen**: the split, the components, the AWS names, the patterns, the numbers, the two failure modes that carry the signal.
+
+This is the one Tier R diagram in `diagrams.md`. Tag it as such.
 
 **Rules that make it work:**
 
-1. **One screen, one diagram.** If it doesn't fit on a laptop screen at readable zoom, it's a normal diagram, not the master. Ruthlessly cut anything that isn't load-bearing.
-2. **It is a recall harness, not a new diagram.** Every box should be a *pointer* to knowledge you already wrote. Annotate boxes with the AWS service name and the number that justifies it, so the diagram carries its own defence.
-3. **Layer it by the central split** — the same split from Rule 1, drawn as subgraphs/lanes so the geometry itself encodes the organizing insight.
-4. **Number the flow.** Numbered edges (`1️⃣`/`1.`) that narrate the primary journey end-to-end. A master diagram you can't narrate in 90 seconds is decoration.
-5. **Mark the hard parts.** Use the failure/danger palette (`#fee2e2`/`#dc2626`) on the 2–3 boxes where the real difficulty lives, so your eye goes to the deep-dive material first.
-6. **Pattern + AWS annotations inline.** Put the pattern name and AWS service on the box or the edge label (e.g. `Hold Service<br/>[contention: rung 1]<br/>ElastiCache SETNX+TTL`).
+1. **One screen, one diagram.** If it doesn't fit on a laptop screen at readable zoom, it's a normal diagram, not the master. Cut anything not load-bearing.
+2. **It's a recall harness, not a new diagram.** Every box points at knowledge already written. Annotate boxes with the AWS service and the number that justifies it.
+3. **Layer it by the central split.** Draw the split as subgraphs or lanes, so the geometry itself carries the insight.
+4. **Number the flow.** Numbered edges narrate the main journey end to end. A master diagram you can't narrate in 90 seconds is decoration.
+5. **Mark the hard parts.** Use the failure palette (`#fee2e2`/`#dc2626`) on the 2–3 boxes where the real difficulty lives.
+6. **Pattern + AWS annotations inline** — e.g. `Hold Service<br/>[contention: rung 1]<br/>ElastiCache SETNX+TTL`.
+7. **Ship a Tier D reduction with it.** Directly below the master, add the 6-box version you'd actually draw. The master is for your eyes; the reduction is for the whiteboard.
 
-**Required structure of the section:**
+**Required structure:**
 
-```markdown
+````markdown
 ## 🎯 The One-Page Master Diagram — Everything on One Screen
 
-> **When to use:** final revision, 10 minutes before the interview. This one diagram
-> reconstructs the whole topic. If you can narrate it end-to-end and name the
-> tradeoff at each red box, you're ready.
+> **When to use:** final revision, 10 minutes before the interview. If you can
+> narrate this end-to-end and name the tradeoff at each red box, you're ready.
 
 ### The central split in one sentence
 **<the split, bolded, one sentence>**
+
+> **Tier R — reference only. Don't draw this one. Draw the reduction below it.**
 
 ```mermaid
 <the single master flowchart — lanes by the central split, numbered flow,
  AWS + pattern annotations on boxes, red on the hard parts>
 ```
 
+### The Tier D reduction — what you actually draw
+```mermaid
+<the same system in ≤ 9 boxes, no colour needed>
+```
+
 ### The 60-second narration
-1. …  ← one numbered line per numbered edge, the story you say out loud
+1. …  ← one numbered line per numbered edge, the words you say out loud
 
 ### The five numbers that justify the design
 | Number | Derivation | Therefore |
@@ -195,73 +474,68 @@ Two diagrams, plainest first:
 |---|---|---|---|
 
 ### If you only remember one thing
-> <one bold sentence — the thing that, if you say it, proves you understand this system>
-```
+> <one bold sentence — the thing that proves you understand this system>
+````
 
-**Exemplars to copy:** [`interviews/payment-system/diagrams.md`](../interviews/payment-system/diagrams.md) and [`interviews/video-streaming/diagrams.md`](../interviews/video-streaming/diagrams.md) — both end with a built master diagram.
+**Exemplars:** [`interviews/payment-system/diagrams.md`](../interviews/payment-system/diagrams.md) and [`interviews/video-streaming/diagrams.md`](../interviews/video-streaming/diagrams.md).
 
-> **Why the last section and not the first?** Writing it requires knowing everything else, exactly like the README's "How a Senior Engineer Thinks" section. Reading it is the reverse — it's the first thing you open when revising. Authoring order and reading order are intentionally opposite.
+> **Why last and not first?** Writing it needs everything else to exist. Reading it is the reverse — it's the first thing you open when revising. Authoring order and reading order are deliberately opposite.
 
-### §2.2 Optional — The 30-Minute Spoken Transcript (deeper rehearsal addendum)
+### 4.2 Optional — The 30-Minute Spoken Transcript
 
-**The problem it solves.** The master diagram's 60-second narration proves you can *summarize* the system. It does not prove you can *perform* a real 30-minute interview under time pressure — hold the RADIO budget, narrate while drawing, field a deep-dive, and land the close. For a topic you're actively rehearsing (not every topic — this is optional, add it when you're drilling for a real loop), write out the **full spoken script**.
+**The problem it solves.** The 60-second narration proves you can *summarize*. It doesn't prove you can *perform* 30 minutes under pressure — hold the RADIO budget, narrate while drawing, field a deep-dive, land the close.
+
+Add this only to a topic you're actively rehearsing. It's a training artifact, not a documentation requirement.
 
 **Rules that make it work:**
 
-1. **Timestamped blocks that mirror RADIO's own time split** ([`RADIO_FRAMEWORK.md`](./RADIO_FRAMEWORK.md) §"The one rule that matters most"), scaled to ~30 minutes: Requirements ≈ 2–5 min, Architecture (drawn live) ≈ 10 min, Data model ≈ 3 min, API ≈ 3 min, Optimizations/deep-dive ≈ 8–10 min, Close ≈ 1 min.
-2. **One spoken sentence per numbered edge of the master diagram.** The "draw + narrate" block must walk the *same* numbered flow as the master diagram, in the same order — the transcript is what you say while your hand draws that diagram, not a separate essay.
-3. **First-person, spoken register, short sentences.** "I'll…", "So here…", "The reason is…" — never written-prose paragraphs. If you wouldn't say it out loud that way, rewrite it.
-4. **Never re-derive numbers — reuse them.** Every figure must already exist in `answers.md` / the topic's `radio-walkthrough.md` (if present). The transcript quotes the number and the one-sentence decision it drives; it does not do fresh arithmetic.
-5. **Pick the two hardest parts for the deep-dive block** and give each its own bottleneck → options → pick → failure mode, in spoken form — mirrors RADIO's "O" step.
-6. **Close on the master diagram's "if you only remember one thing" line**, spoken as the last sentence.
-7. **End with a one-line practice tip** — read it aloud, on a timer, until the *structure* is internalized rather than the words memorized (so an interviewer's interruption doesn't break it).
+1. **Timestamped blocks mirroring RADIO's split** ([`RADIO_FRAMEWORK.md`](./RADIO_FRAMEWORK.md) §0), scaled to ~30 min: Requirements 2–5, Architecture (drawn live) ~10, Data model ~3, API ~3, Deep dive 8–10, Close ~1.
+2. **One spoken sentence per numbered edge** of the master diagram's Tier D reduction, in the same order. This is what you say while your hand draws.
+3. **First person, spoken register, short sentences.** "I'll…", "So here…", "The reason is…". If you wouldn't say it out loud, rewrite it. [§1](#1-house-style--the-sentence-rules) applies twice as hard here.
+4. **Never re-derive numbers.** Every figure already exists in `answers.md`. Quote it and state the decision it drives.
+5. **Pick the two hardest parts** for the deep-dive block. Each gets bottleneck → options → pick → failure mode, spoken.
+6. **Close on the master diagram's "if you only remember one thing"** line.
+7. **End with a one-line practice tip** — read aloud, on a timer, until the *structure* is internal. Then an interruption can't break you.
 
-**Required structure of the section** (append directly after the master diagram's own required structure, still inside `diagrams.md`):
+**Required structure** (append after the master diagram, still inside `diagrams.md`):
 
 ```markdown
 ### 🎤 30-Minute Interview Transcript — What to Actually Say
 
-> Practice reading this OUT LOUD while drawing the master diagram live. Timestamps
-> are a budget, not a stopwatch — the ORDER (R→A→D→I→O→Close) is what must hold.
+> Read this OUT LOUD while drawing the Tier D reduction live. Timestamps are a
+> budget, not a stopwatch — the ORDER (R→A→D→I→O→Close) is what must hold.
 
 #### [00:00–0X:XX] Open — restate the problem and scope it
-- spoken sentences…
-
 #### [0X:XX–0X:XX] Size the problem in your head
-- spoken sentences, reusing numbers already derived elsewhere…
-
 #### [0X:XX–0X:XX] Draw the architecture live, narrating each piece
-1. "First, …" — draw box 1
-2. "Now …" — draw box 2
-   …one numbered block per numbered edge on the master diagram…
-
 #### [0X:XX–0X:XX] Data model — say this fast
 #### [0X:XX–0X:XX] API — the handful of endpoints that matter
 #### [0X:XX–0X:XX] Deep dive — pick the two hardest parts
-**Deep dive 1 — <hardest part> (~X min)**
-**Deep dive 2 — <second hardest part> (~X min)**
-
 #### [0X:XX–30:00] Close with the one-line thesis
 > 💡 **Practice tip:** …
 ```
 
-**Exemplar:** [`interviews/food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — the "🎤 30-Minute Interview Transcript" at the very end. *(Predates the current §2.1 master-diagram spec, so its final diagram doesn't yet carry the five-numbers/patterns/three-failures tables — treat it as the transcript exemplar, not the master-diagram exemplar; use payment-system/video-streaming for that.)*
-
-> **Optional, not required.** Add this addendum only to topics you're rehearsing for an upcoming interview. Don't write one for every folder — it's a training artifact, not a documentation requirement.
-
-### `deep-dive.md`
-- Beginner → Senior → Architect progression using depth tiers 🟢 (fundamentals) / 🟡 (senior) / 🔴 (staff/architect).
-- Real-world implementations, quantified failure modes, production tradeoffs, and a closing cheat sheet.
+**Exemplar:** [`interviews/food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — the transcript at the very end. *(It predates the current §4.1 spec, so its final diagram lacks the numbers/patterns/failures tables. Use it as the transcript exemplar only.)*
 
 ---
 
-## 3. Mermaid conventions
+## 5. Mermaid conventions
 
 Keep diagrams renderable and consistent.
 
-**Node shapes:** `["box"]` service/process · `[("cylinder")]` datastore · `{"diamond"}` decision · `{{"hexagon"}}` event/topic · `[["subroutine"]]` queue/stream/bus · `(["stadium"])` external actor.
+**Node shapes** — five, and no more in a Tier D diagram:
 
-**Color palette** (via `style NODE fill:#hex,stroke:#hex`) — use meaning, not decoration:
+| Shape | Syntax | Means |
+|---|---|---|
+| Box | `["name"]` | service / process |
+| Cylinder | `[("name")]` | datastore |
+| Stadium | `(["name"])` | external actor / user |
+| Diamond | `{"name"}` | decision |
+| Queue | `[["name"]]` | queue / stream / bus |
+
+Tier R may also use `{{"hexagon"}}` for an event or topic.
+
+**Colour palette** (`style NODE fill:#hex,stroke:#hex`) — meaning, not decoration. And never the *only* carrier of meaning ([§2.1](#21-tier-d--drawable-the-default)):
 
 | Meaning | fill | stroke |
 |---|---|---|
@@ -273,85 +547,124 @@ Keep diagrams renderable and consistent.
 | Callout / note | `#e0e7ff` | `#4338ca` |
 
 **Gotchas that break rendering:**
-- Put multi-line and special-character labels in **quotes**: `NODE["line one<br/>line two"]`.
+- Quote any label with multiple lines or special characters: `NODE["line one<br/>line two"]`.
 - Use `<br/>` for line breaks inside quoted labels.
-- Escape `>` as `&gt;` inside labels (e.g. `"speed &gt; 50 m/s?"`) so it doesn't close a `{}`/shape.
-- In `subgraph NAME["Label"]`, set `direction TB` on the first line inside.
-- Don't use `end` as a node id (reserved).
-- `stateDiagram-v2` transition labels are single-line free text after the colon — no `<br/>`.
+- Escape `>` as `&gt;` inside labels, e.g. `"speed &gt; 50 m/s?"`. Otherwise it closes the shape.
+- In `subgraph NAME["Label"]`, put `direction TB` on the first line inside.
+- Don't use `end` as a node id. Reserved.
+- `stateDiagram-v2` transition labels are single-line free text after the colon. No `<br/>`.
+- Preview every diagram before calling the topic done.
 
 ---
 
-## 4. Accuracy rules (non-negotiable — these govern all content)
+## 6. Accuracy rules (non-negotiable)
 
-1. **Flag uncertainty.** "I am not certain, but…" / "verify against current docs." Never state a guess as fact.
-2. **No invented sources.** No fake paper titles, authors, URLs, or blog references. If you can't name a verifiable source, say so.
-3. **Label statistics.** Prefix estimates with "approximately"; explicitly mark capacity-planning figures (e.g. "~50K sockets/server") as order-of-magnitude planning numbers to verify, not hard limits.
-4. **No invented APIs.** Don't fabricate function/library/command names. If unsure a call exists, say "verify in current docs" (e.g. note when a command like Redis `GEORADIUS` is legacy vs `GEOSEARCH`).
-5. **Vendor claims must be verifiable.** OK: "Uber open-sourced H3," "Netflix Open Connect embeds servers in ISPs." Avoid internal codenames you can't confirm. Keep examples generic (Dynamo/Spanner/Cassandra/FAANG) unless a specific claim is verifiable.
-6. **Numbers derive from the stated problem constraints** where possible (e.g. "1M drivers ÷ 4s = 250K writes/s"), so the math is checkable rather than asserted.
-7. **AWS specifics get extra scepticism.** Service names, quotas, and limits change, and many quotas are per-account adjustable. So:
-   - Treat every AWS limit as an **order-of-magnitude planning number to verify** — mark it `⚠️ verify` (the convention used in [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md)) rather than stating it flatly.
-   - **Never invent a service name or an API/parameter name.** If you're unsure a service or capability exists, say "verify in current AWS docs."
-   - Flag services that may be deprecated or renamed rather than leading with them.
-   - Don't imply an AWS service provides a guarantee it doesn't — the "What AWS Does *Not* Give You" list in `AWS_SERVICE_MAP.md` §4 is there precisely because these are the claims that get made carelessly (exactly-once, cross-service transactions, global ordering, strong cross-region reads).
+These govern all content.
+
+1. **Flag uncertainty.** "I'm not certain, but…" / "verify against current docs." Never state a guess as fact.
+2. **No invented sources.** No fake paper titles, authors, URLs, or blogs. If you can't name a verifiable source, say so.
+3. **Label statistics.** Prefix estimates with "approximately". Mark capacity figures (e.g. "~50K sockets/server") as order-of-magnitude planning numbers to verify, not hard limits.
+4. **No invented APIs.** Don't fabricate function, library, or command names. If unsure, say "verify in current docs" — e.g. note that Redis `GEORADIUS` is legacy vs `GEOSEARCH`.
+5. **Vendor claims must be verifiable.** OK: "Uber open-sourced H3." "Netflix Open Connect embeds servers in ISPs." Avoid internal codenames you can't confirm.
+6. **Numbers derive from stated constraints** where possible — "1M drivers ÷ 4s = 250K writes/s" — so the math is checkable, not asserted.
+7. **AWS specifics get extra scepticism.** Names, quotas, and limits change, and many quotas are per-account adjustable:
+   - Treat every AWS limit as an order-of-magnitude planning number. Mark it `⚠️ verify`, the convention in [`AWS_SERVICE_MAP.md`](./AWS_SERVICE_MAP.md).
+   - **Never invent a service or parameter name.** Unsure it exists? Say "verify in current AWS docs."
+   - Flag possibly-deprecated or renamed services rather than leading with them.
+   - Don't imply a guarantee AWS doesn't give. The "What AWS Does *Not* Give You" list in `AWS_SERVICE_MAP.md` §4 exists because these claims get made carelessly — exactly-once, cross-service transactions, global ordering, strong cross-region reads.
 
 When honesty and helpfulness conflict, choose honesty.
 
 ---
 
-## 5. New-topic checklist
+## 7. New-topic checklist
 
-Copy this into a scratch note when starting a topic:
+Copy this into a scratch note when starting a topic.
 
 ```text
-[ ] Named the central split in one sentence (drives Diagram 1 + simple-diagram + README senior section + master diagram)
+STRUCTURE
+[ ] Named the central split in one sentence (drives Diagram 1 + simple-diagram + README + master)
 [ ] Named the PATTERNS this topic assembles (patterns/README.md reverse index) — central vs present
 [ ] Pulled real constraints (scale, latency SLA, availability, durability) into the problem statement
-[ ] questions.md: 8 levels, continuous Q-numbering, italic level goals, failure-mode Qs, bonus QBs
+
+STYLE (Rule 2)
+[ ] Read every file aloud — no sentence made me stumble or run out of breath
+[ ] Sentences ≤ 15 words, one idea each, active voice, actor named
+[ ] Ban list swept: leverage / utilize / facilitate / in order to / subsequently / thereby / performant
+[ ] Every jargon term glossed once, in brackets, on first use in that file
+[ ] Every answer opens with the one-sentence answer, before the reasoning
+[ ] Headings are plain and descriptive; the heading list alone outlines the topic
+
+DIAGRAMS (Rule 3)
+[ ] diagrams.md has 12–16 diagrams; ≥ 1 per question level; Diagram 1 = the split
+[ ] EVERY diagram is Tier D unless tagged Tier R (≤9 boxes, ≤12 arrows, ≤4-word labels, 90s to draw)
+[ ] Every Tier D diagram has "Draw order" + "Say while drawing"
+[ ] No diagram depends on colour to be understood
+[ ] simple-diagram.md has the ASCII "pen version" of Diagram 1
+[ ] Tier R appears ONLY in: detailed simple-diagram, deep-dive.md, master diagram — and is tagged
+[ ] Diagram types are mixed (flowchart / sequence / state), not all flowcharts
+[ ] Mermaid: labels quoted, `>` escaped, `direction TB` in subgraphs, previewed and renders
+
+DEEP-DIVE MARKING (Rule 6)
+[ ] All depth lives in deep-dive.md; it opens with the `> **deep-dive**` banner
+[ ] deep-dive.md sections all carry 🟢 / 🟡 / 🔴 tiers
+[ ] Any deep passage outside deep-dive.md is in a collapsed <details> block whose summary says "deep-dive"
+[ ] README.md, simple-diagram.md, questions.md contain ZERO deep-dive blocks
+[ ] No collapsed deep-dive block is load-bearing — the short answer stands alone
+
+CONTENT
+[ ] questions.md: 8 levels, continuous numbering, italic goals, failure-mode Qs, bonus QBs
 [ ] answers.md: every Q answered, each with table OR code, each ends with **Key takeaway**
-[ ] answers.md: pattern instances LINK to patterns/ instead of re-deriving the ladder
-[ ] answers.md: ⚡ cheat sheet (scale numbers · tech choices w/ primitive+AWS+native · patterns used · tradeoffs · mistakes)
-[ ] simple-diagram.md: simple model + components table + "one idea" + detailed model + protocols
-[ ] simple-diagram.md: service cheat-sheet is 4-column (Primitive | AWS | Native/OSS | Why) + AWS-gotchas list
-[ ] diagrams.md: Diagram 1 = the split; 8–12 diagrams; each has "when to use" (Q refs) + "what interviewer checks"
-[ ] diagrams.md: Quick Interview Reference, THEN the 🎯 One-Page Master Diagram as the final section (§2.1)
-[ ] Master diagram: one screen · numbered flow · AWS+pattern annotations · red on the hard parts · narration + 5 numbers + patterns + 3 failures + "one thing"
-[ ] (Optional, if rehearsing this topic) §2.2 30-Minute Spoken Transcript added — timestamped R→A→D→I→O blocks, one sentence per numbered master-diagram edge, numbers reused not re-derived
-[ ] diagrams.md: mermaid colors carry meaning; labels quoted; `>` escaped; renders cleanly (preview it)
-[ ] deep-dive.md: 🟢🟡🔴 depth tiers, failure modes, real examples
-[ ] README.md: how-to-use names every file; files table; learning path; Patterns-in-play table; senior-thinking section written LAST
-[ ] Cross-links added between related topic folders + down into patterns/ and fundamentals/
-[ ] Any NEW AWS mapping row added back to docs/AWS_SERVICE_MAP.md (keep the vocabulary in one place)
-[ ] Any recurring sub-problem with no pattern file added to the patterns/README.md gap list
+[ ] answers.md: pattern instances LINK to patterns/ instead of re-deriving
+[ ] answers.md: ⚡ cheat sheet (scale · tech w/ primitive+AWS+native · patterns · tradeoffs · mistakes)
+[ ] simple-diagram.md: simple model + pen version + components table + "one idea" + detailed + protocols
+[ ] simple-diagram.md: 4-column service cheat-sheet (Primitive | AWS | Native/OSS | Why) + AWS gotchas
+[ ] README.md: how-to-use names every file; files table; learning path; Patterns-in-play table
+[ ] README.md: "<Topic> in an Interview" — when to use / where it breaks / five sentences that score
+[ ] README.md: senior-thinking section written LAST
+[ ] deep-dive.md: 🟢 analogy · 🟡 code+table · 🔴 capacity math or failure mode · ≥15-row cheat sheet
+
+FINISH
+[ ] Master diagram (§4.1): one screen · Tier D reduction below it · numbered flow · AWS+pattern
+    annotations · red on hard parts · narration + 5 numbers + patterns + 3 failures + "one thing"
+[ ] (Optional, if rehearsing) §4.2 transcript added — timestamped R→A→D→I→O, numbers reused
+[ ] Cross-links between related topics + down into patterns/ and fundamentals/
+[ ] New AWS rows pushed back to docs/AWS_SERVICE_MAP.md
+[ ] New recurring sub-problem added to the patterns/README.md gap list
 [ ] ROADMAP.md updated (dashboard counts + status line + quick-ref row)
-[ ] Accuracy pass: hedged uncertain numbers, no invented sources/APIs, vendor claims verifiable, AWS limits marked ⚠️ verify
+[ ] Accuracy pass: hedged numbers, no invented sources/APIs, AWS limits marked ⚠️ verify
 ```
 
 ---
 
-## 6. Quality bar (self-review before calling it done)
+## 8. Quality bar — self-review before calling it done
 
+Ask these out loud.
+
+- **Can I read any page of this aloud without stumbling?** If not, the sentences are too long (Rule 2).
+- **Can I draw every Tier D diagram from memory in 90 seconds, with a pen?** If not, it has too many boxes (Rule 3).
 - **Can a candidate whiteboard the whole system from `diagrams.md` alone?** If not, a diagram is missing.
-- **Can they reconstruct the topic from the one-page master diagram alone in 90 seconds?** That's the real test of the master diagram — if you need a second file, it's not doing its job.
+- **Can they rebuild the topic from the master diagram in 90 seconds?** Needing a second file means it isn't doing its job.
 - **Does every answer give something defensible to *say*, not just facts to know?** The Key takeaway is that sentence.
-- **Is the central split obvious within the first screen of the README and Diagram 1?**
-- **Is every named service preceded by the primitive it implements?** A service name with no property attached is a name-drop, not an answer (Rule 3).
-- **Does the folder route to `patterns/` instead of re-deriving ladders?** If the same contention/saga/read-scaling reasoning appears in three topic folders, it belongs in a pattern file.
-- **Would the accuracy rules survive a fact-check?** No unverifiable numbers stated as fact, no invented citations, no unmarked AWS quotas.
-- **Do the failure-mode questions have real incident-response answers**, not hand-waving?
+- **Is the central split obvious in the first screen of the README and Diagram 1?**
+- **Is every service name preceded by the primitive it implements?** A bare service name is a name-drop (Rule 5).
+- **Does the folder route to `patterns/` instead of re-deriving ladders?** The same contention/saga reasoning in three folders belongs in a pattern file.
+- **Is every deep passage marked and collapsed?** A first-pass reader must be able to skip all of it and still pass (Rule 6).
+- **Would this survive a fact-check?** No unverifiable numbers as fact, no invented citations, no unmarked AWS quotas.
+- **Do the failure-mode questions have real incident-response answers?** Not hand-waving.
 
 ---
 
-## 7. Order of operations (recommended)
+## 9. Order of operations
 
-1. **Name the central split and the patterns in play** (one sentence + the reverse-index row). Everything downstream hangs off this.
-2. Draft `questions.md` (defines scope and levels).
-3. Write `simple-diagram.md` (forces you to commit to the split; fill the 4-column primitive/AWS/native cheat-sheet here first — later files reuse it).
-4. Write `answers.md` (the substance; Key takeaways crystallize each point; link out to `patterns/` rather than re-deriving).
-5. Write `diagrams.md` diagrams 1–N (visualize what the answers describe; Diagram 1 = the split).
-6. Write `deep-dive.md` (depth beyond the happy path).
-7. Write `README.md` — especially "How a Senior Engineer Thinks," which is a summary of everything above.
-8. **Write the One-Page Master Diagram last of all** (§2.1). It compresses every file above, so it can only be written once they exist — and it's the first thing you'll read when revising.
-9. (Optional) `conducive-sentences.md` prose pass.
-10. Update `ROADMAP.md` + cross-links; push any new AWS rows to `AWS_SERVICE_MAP.md` and any new sub-problem to the `patterns/` gap list. Accuracy pass. Preview all Mermaid.
+1. **Name the central split and the patterns in play.** One sentence plus the reverse-index row. Everything hangs off this.
+2. Draft `questions.md`. It defines scope and levels.
+3. Write `simple-diagram.md`. It forces you to commit to the split. Fill the 4-column primitive/AWS/native cheat-sheet here first — later files reuse it.
+4. Write `answers.md`. The substance. Key takeaways crystallize each point. Link out to `patterns/`.
+5. Write `diagrams.md` diagrams 1–N. Diagram 1 = the split. All Tier D, each with draw order and spoken lines.
+6. Write `deep-dive.md`. Move any depth that leaked into steps 3–5 in here.
+7. Write `README.md` — especially "in an Interview" and "How a Senior Engineer Thinks".
+8. **Write the One-Page Master Diagram last** (§4.1). It compresses everything above, so it can only be written once the rest exists. It's also the first thing you'll read when revising.
+9. (Optional) `conducive-sentences.md` prose pass, or the §4.2 transcript if you're rehearsing this topic.
+10. Update `ROADMAP.md` and cross-links. Push new AWS rows to `AWS_SERVICE_MAP.md` and new sub-problems to the `patterns/` gap list. Accuracy pass. Preview all Mermaid.
+11. **Read-aloud pass.** Last thing, always. Fix every sentence that made you stumble.
