@@ -100,6 +100,47 @@ class ChatServer:
             await conn.websocket.send(json.dumps({"type": "pong"}))
 ```
 
+<details>
+<summary>☕ <b>Java</b> — note the concurrent collections — this map is shared across request threads</summary>
+
+```java
+record Connection(String userId, String deviceId,
+                  WebSocketSession session, Instant connectedAt) {}
+
+@Component
+class ChatServer extends TextWebSocketHandler {
+    private final Map<String, List<Connection>> connections = new ConcurrentHashMap<>();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws IOException {
+        // 1. Authenticate via token
+        User user = verifyJwt(queryParam(session, "token"));
+        if (user == null) {
+            session.close(new CloseStatus(4001, "Unauthorized"));
+            return;
+        }
+
+        // 2. Register connection
+        Connection conn = new Connection(user.id(), queryParam(session, "device_id"),
+                                         session, Instant.now());
+        connections.computeIfAbsent(user.id(), k -> new CopyOnWriteArrayList<>()).add(conn);
+        registerInRedis(conn);
+
+        // 3. Sync missed messages
+        syncOfflineMessages(conn);
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        connections.values().forEach(l -> l.removeIf(c -> c.session().equals(session)));
+    }
+}
+// CopyOnWriteArrayList: many reads (broadcast), rare writes (connect/disconnect).
+```
+
+</details>
+
+
 **Scaling across servers with Redis Pub/Sub**:
 
 ```python
@@ -136,6 +177,47 @@ class MessageRouter:
                 data = json.loads(message["data"])
                 await self.send_local(data["connection_id"], data["payload"])
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same two-hop routing</summary>
+
+```java
+class MessageRouter {
+    private final String serverId;
+
+    void routeToUser(String userId, Map<String, Object> message) {
+        Map<String, String> connections = jedis.hgetAll("user_conns:" + userId);
+
+        connections.forEach((connId, targetServerId) -> {
+            if (serverId.equals(targetServerId)) {
+                sendLocal(connId, message);                    // Local — send directly
+            } else {
+                jedis.publish("server:" + targetServerId + ":inbound",   // Remote
+                        json.writeValueAsString(Map.of(
+                                "connection_id", connId,
+                                "payload",       message)));
+            }
+        });
+    }
+
+    /** Listen for messages routed to this server. */
+    void subscribeToInbound() {
+        subscribers.submit(() -> {
+            try (Jedis j = pool.getResource()) {
+                j.subscribe(new JedisPubSub() {
+                    @Override public void onMessage(String ch, String msg) {
+                        Envelope e = json.readValue(msg, Envelope.class);
+                        sendLocal(e.connectionId(), e.payload());
+                    }
+                }, "server:" + serverId + ":inbound");
+            }
+        });
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -292,6 +374,50 @@ async def process_message(conn: Connection, data: dict):
     await deliver_to_conversation(message)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — enum + record instead of loose strings</summary>
+
+```java
+enum MessageStatus {
+    SENDING,    // Client generated, not yet sent
+    SENT,       // Server received and stored
+    DELIVERED,  // Recipient's device received
+    READ        // Recipient opened conversation
+}
+
+record Message(long id,                    // Snowflake ID
+               String conversationId,
+               String senderId,
+               String content,
+               MessageStatus status,
+               Instant createdAt,
+               Instant deliveredAt,
+               Instant readAt) {}
+
+void processMessage(Connection conn, SendRequest data) throws IOException {
+    // 1. Idempotency check — the same client id must never create two messages.
+    String existing = jedis.get("msg_dedup:" + data.clientMessageId());
+    if (existing != null) {
+        send(conn, Map.of("type", "message_ack",
+                          "client_message_id", data.clientMessageId(),
+                          "message_id", existing,
+                          "status", "sent"));
+        return;
+    }
+
+    // 2. Server generates the id, stores, then acks.
+    long messageId = snowflake.generate();
+    Message message = new Message(messageId, data.conversationId(), conn.userId(),
+                                  data.content(), MessageStatus.SENT,
+                                  Instant.now(), null, null);
+    db.insert(message);
+    jedis.setex("msg_dedup:" + data.clientMessageId(), 86_400, String.valueOf(messageId));
+}
+```
+
+</details>
+
+
 **Ordering with Snowflake IDs**:
 
 ```python
@@ -329,6 +455,56 @@ class SnowflakeGenerator:
                 self.sequence
             )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — synchronized, and the long-literal trap</summary>
+
+```java
+public final class SnowflakeGenerator {
+    private static final long EPOCH = 1_609_459_200_000L;   // 2021-01-01 UTC
+
+    private final long datacenterId;   // 5 bits
+    private final long workerId;       // 5 bits
+    private long sequence      = 0L;
+    private long lastTimestamp = -1L;
+
+    public SnowflakeGenerator(long datacenterId, long workerId) {
+        this.datacenterId = datacenterId & 0x1F;
+        this.workerId     = workerId     & 0x1F;
+    }
+
+    public synchronized long generate() {
+        long timestamp = System.currentTimeMillis() - EPOCH;
+
+        if (timestamp < lastTimestamp) {
+            throw new ClockMovedBackwardsException(lastTimestamp - timestamp);
+        }
+
+        if (timestamp == lastTimestamp) {
+            sequence = (sequence + 1) & 0xFFF;          // 12 bits
+            if (sequence == 0) timestamp = waitNextMillis(timestamp);
+        } else {
+            sequence = 0;
+        }
+        lastTimestamp = timestamp;
+
+        // 64 bits: 1 unused + 41 timestamp + 5 datacenter + 5 worker + 12 sequence
+        return (timestamp    << 22)
+             | (datacenterId << 17)
+             | (workerId     << 12)
+             | sequence;
+    }
+
+    private long waitNextMillis(long ts) {
+        while (ts <= lastTimestamp) ts = System.currentTimeMillis() - EPOCH;
+        return ts;
+    }
+}
+// Every literal needs the L suffix — 1_609_459_200_000 overflows an int.
+```
+
+</details>
+
 
 ---
 
@@ -380,6 +556,41 @@ async def process_outbox():
         
         await asyncio.sleep(0.1)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — SKIP LOCKED lets you run several relays safely</summary>
+
+```java
+@Transactional
+void sendMessageTransactionally(Message message) {
+    // 1 + 2 in ONE transaction: the message and its outbox row.
+    jdbc.update("INSERT INTO messages (...) VALUES (...)", message.fields());
+    jdbc.update("""
+            INSERT INTO message_outbox (message_id, payload, created_at)
+            VALUES (?, ?, NOW())
+            """, message.id(), json.writeValueAsString(message.toEvent()));
+}
+
+// Separate outbox processor (background worker)
+void processOutbox() {
+    List<OutboxRow> events = jdbc.query("""
+            SELECT * FROM message_outbox ORDER BY created_at LIMIT 100
+            FOR UPDATE SKIP LOCKED
+            """, outboxMapper);
+
+    for (OutboxRow event : events) {
+        try {
+            kafka.send(new ProducerRecord<>("messages", event.payload())).get();
+            jdbc.update("DELETE FROM message_outbox WHERE message_id = ?", event.messageId());
+        } catch (Exception e) {
+            log.warn("publish failed; row stays for the next pass", e);
+        }
+    }
+}
+```
+
+</details>
+
 
 **Cassandra message storage**:
 
@@ -482,6 +693,49 @@ class PresenceService:
             })
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same TTL-driven presence</summary>
+
+```java
+class PresenceService {
+    private static final int ONLINE_TTL = 30;   // offline after 30s of silence
+
+    void setOnline(String userId) {
+        Pipeline pipe = jedis.pipelined();
+        pipe.setex("presence:" + userId, ONLINE_TTL, "online");
+        pipe.set("last_seen:" + userId, Instant.now().toString());
+        pipe.sync();
+
+        publishPresenceChange(userId, "online");
+    }
+
+    void heartbeat(String userId) {
+        jedis.expire("presence:" + userId, ONLINE_TTL);   // just reset the TTL
+    }
+
+    PresenceView getPresence(String viewerId, String targetId) {
+        PrivacySettings privacy = getPrivacySettings(targetId);
+
+        if (privacy.lastSeenVisibility() == Visibility.NOBODY) {
+            return PresenceView.hidden();
+        }
+        if (privacy.lastSeenVisibility() == Visibility.CONTACTS
+                && !areContacts(viewerId, targetId)) {
+            return PresenceView.hidden();
+        }
+
+        boolean online = jedis.exists("presence:" + targetId);
+        return new PresenceView(online ? "online" : "offline",
+                                jedis.get("last_seen:" + targetId));
+    }
+}
+// TTL-as-presence is the trick: no explicit "go offline" event needed —
+// a crashed client simply stops renewing.
+```
+
+</details>
+
+
 **Typing indicators**:
 
 ```python
@@ -511,6 +765,38 @@ class TypingService:
         keys = await self.redis.keys(f"typing:{conversation_id}:*")
         return [key.split(":")[-1] for key in keys]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — SET NX EX as the throttle — atomic, and self-expiring</summary>
+
+```java
+class TypingService {
+    private static final int TYPING_TTL = 5;   // auto-expire after 5s
+
+    void setTyping(String userId, String conversationId, boolean isTyping) {
+        String key = "typing:" + conversationId + ":" + userId;
+
+        if (!isTyping) {
+            jedis.del(key);
+            broadcastTyping(conversationId, userId, false);
+            return;
+        }
+
+        // Throttle: at most one broadcast per 3 seconds per user per conversation.
+        String broadcastKey = "typing_broadcast:" + key;
+        String acquired = jedis.set(broadcastKey, "1", SetParams.setParams().nx().ex(3));
+        if (!"OK".equals(acquired)) return;    // broadcast too recently
+
+        jedis.setex(key, TYPING_TTL, "1");
+        broadcastTyping(conversationId, userId, true);
+    }
+}
+// SET NX EX is a cleaner throttle than storing a timestamp and comparing —
+// it's atomic, and the key expires itself.
+```
+
+</details>
+
 
 ---
 
@@ -572,6 +858,44 @@ class ShardedPresence:
         
         return results
 ```
+
+<details>
+<summary>☕ <b>Java</b> — groupingBy does the shard bucketing in one line</summary>
+
+```java
+class ShardedPresence {
+    private final List<JedisPool> shards;
+
+    private JedisPool shardFor(String userId) {
+        return shards.get(Math.floorMod(userId.hashCode(), shards.size()));
+    }
+
+    void setOnline(String userId) {
+        try (Jedis j = shardFor(userId).getResource()) {
+            j.setex("presence:" + userId, 30, "online");
+        }
+    }
+
+    Map<String, String> getBulkPresence(List<String> userIds) {
+        // Group by shard so each shard gets ONE round trip, not N.
+        Map<Integer, List<String>> byShard = userIds.stream()
+                .collect(Collectors.groupingBy(
+                        id -> Math.floorMod(id.hashCode(), shards.size())));
+
+        // Query shards in parallel, then merge.
+        return byShard.entrySet().stream()
+                .map(e -> CompletableFuture.supplyAsync(
+                        () -> queryShard(e.getKey(), e.getValue()), pool))
+                .map(CompletableFuture::join)
+                .flatMap(m -> m.entrySet().stream())
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+}
+// floorMod, not % — String.hashCode() can be negative.
+```
+
+</details>
+
 
 **Presence fanout optimization**:
 
@@ -669,6 +993,44 @@ class FanoutWorker:
             await self.push_service.enqueue(data["recipient_id"], data)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — exceptionally() is Python's return_exceptions=True</summary>
+
+```java
+class GroupMessageService {
+    private static final int SYNC_THRESHOLD = 100;
+
+    void sendGroupMessage(Message message) {
+        db.insert(message);
+
+        List<String> recipients = getGroupMembers(message.conversationId()).stream()
+                .filter(id -> !id.equals(message.senderId()))     // exclude sender
+                .toList();
+
+        if (recipients.size() <= SYNC_THRESHOLD) {
+            syncFanout(message, recipients);        // Small group: inline
+        } else {
+            asyncFanout(message, recipients);       // Large group: via Kafka
+        }
+        ackMessageSent(message);
+    }
+
+    private void syncFanout(Message message, List<String> recipients) {
+        // allOf waits for every delivery; exceptionally() stops one bad
+        // recipient failing the whole fan-out (Python's return_exceptions=True).
+        CompletableFuture.allOf(recipients.stream()
+                .map(id -> CompletableFuture
+                        .runAsync(() -> deliverToUser(id, message), pool)
+                        .exceptionally(e -> { log.warn("deliver failed for {}", id, e); return null; }))
+                .toArray(CompletableFuture[]::new)
+        ).join();
+    }
+}
+```
+
+</details>
+
+
 **Kafka partitioning for ordering**:
 
 ```python
@@ -713,6 +1075,30 @@ class GroupReadReceipts:
         # Approximate count (HyperLogLog has ~0.81% error)
         return await self.redis.pfcount(f"read_count:{message_id}")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the tradeoff HLL makes</summary>
+
+```java
+// WhatsApp: no read receipts for groups > 100. Slack: none at all.
+// If you must have them at scale, don't store one row per reader.
+class GroupReadReceipts {
+
+    void onMessageRead(String userId, long messageId) {
+        // HyperLogLog: ~12 KB for billions of distinct readers.
+        jedis.pfadd("read_count:" + messageId, userId);
+    }
+
+    long getReadCount(long messageId) {
+        return jedis.pfcount("read_count:" + messageId);   // ~0.81% error
+    }
+}
+// The trade is explicit: you get "247 people read this" cheaply, but you
+// can never answer "did Alice read it?" — that needs the exact set.
+```
+
+</details>
+
 
 **Sharding group data**:
 
@@ -832,6 +1218,47 @@ class PushService:
                         await self.invalidate_device_token(token)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — java.net.http.HttpClient speaks HTTP/2 out of the box</summary>
+
+```java
+class PushService {
+
+    void sendNotification(String userId, Notification notification) {
+        for (Device device : getUserDevices(userId)) {
+            switch (device.platform()) {
+                case IOS     -> sendApns(device.pushToken(), notification);
+                case ANDROID -> sendFcm(device.pushToken(), notification);
+            }
+        }
+    }
+
+    void sendApns(String token, Notification n) throws Exception {
+        Map<String, Object> payload = Map.of(
+                "aps", Map.of(
+                        "alert", Map.of("title", n.title(), "body", n.body()),
+                        "sound", "default",
+                        "badge", n.badge()),
+                "data", n.data());
+
+        // APNs requires HTTP/2 — Java's HttpClient speaks it natively.
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(APNS_ENDPOINT + "/3/device/" + token))
+                .version(HttpClient.Version.HTTP_2)
+                .header("apns-topic", "com.yourapp.chat")
+                .header("apns-push-type", "alert")
+                .header("authorization", "bearer " + apnsJwt())
+                .POST(BodyPublishers.ofString(json.writeValueAsString(payload)))
+                .build();
+
+        httpClient.send(request, BodyHandlers.ofString());
+    }
+}
+```
+
+</details>
+
+
 **Handling offline message queue**:
 
 ```python
@@ -861,6 +1288,44 @@ class OfflineMessageQueue:
         
         return [json.loads(m) for m in results[0]]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — the pipeline is what makes get-and-delete atomic</summary>
+
+```java
+class OfflineMessageQueue {
+    private static final int  MAX_QUEUED = 1000;
+    private static final long QUEUE_TTL  = 7 * 24 * 3600;
+
+    void queueForOffline(String userId, Message message) {
+        String key = "offline_queue:" + userId;
+        Pipeline pipe = jedis.pipelined();
+        pipe.rpush(key, json.writeValueAsString(message));
+        pipe.ltrim(key, -MAX_QUEUED, -1);       // Trim if too long
+        pipe.expire(key, QUEUE_TTL);
+        pipe.sync();
+    }
+
+    /** Called when the user reconnects via WebSocket. */
+    List<Message> drainQueue(String userId) {
+        String key = "offline_queue:" + userId;
+
+        // Atomic get-and-delete: pipelining both means no window where a
+        // message arrives after the read but before the delete.
+        Pipeline pipe = jedis.pipelined();
+        Response<List<String>> items = pipe.lrange(key, 0, -1);
+        pipe.del(key);
+        pipe.sync();
+
+        return items.get().stream()
+                .map(m -> json.readValue(m, Message.class))
+                .toList();
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -913,6 +1378,46 @@ class PushBatcher:
             await self.send_fcm_batch(batch)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the timer is a scheduled task, not a check inside add()</summary>
+
+```java
+class PushBatcher {
+    private static final int  BATCH_SIZE      = 500;   // FCM batch limit
+    private static final long BATCH_WINDOW_MS = 100;   // Maximum delay
+
+    private final Map<Platform, List<Pending>> pending = new ConcurrentHashMap<>();
+
+    void add(Platform platform, String token, Notification n) {
+        List<Pending> batch = pending.computeIfAbsent(
+                platform, p -> Collections.synchronizedList(new ArrayList<>()));
+        batch.add(new Pending(token, n));
+
+        // Flush on size OR time, whichever trips first — size alone stalls
+        // on a quiet stream, time alone doesn't bound memory.
+        if (batch.size() >= BATCH_SIZE) flush(platform);
+    }
+
+    PushBatcher(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(
+                () -> pending.keySet().forEach(this::flush),
+                BATCH_WINDOW_MS, BATCH_WINDOW_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void flush(Platform platform) {
+        List<Pending> batch = pending.put(platform,
+                Collections.synchronizedList(new ArrayList<>()));
+        if (batch == null || batch.isEmpty()) return;
+
+        if (platform == Platform.IOS) sendApnsBatch(batch);   // HTTP/2 multiplexing
+        else                          sendFcmBatch(batch);    // FCM batch API
+    }
+}
+```
+
+</details>
+
+
 **Silent push for background sync**:
 
 ```python
@@ -938,6 +1443,29 @@ async def send_sync_trigger(user_id: str):
                 # No "notification" key = silent/data-only message
             })
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same silent-push payloads</summary>
+
+```java
+/** Wake the app to sync, with nothing shown to the user. */
+void sendSyncTrigger(String userId) {
+    for (Device device : getUserDevices(userId)) {
+        if (device.platform() == Platform.IOS) {
+            sendApns(device.token(), Map.of(
+                    "aps",  Map.of("content-available", 1),   // Silent push
+                    "data", Map.of("action", "sync")));
+        } else {
+            // No "notification" key = data-only, so Android stays silent too.
+            sendFcm(device.token(), Map.of(
+                    "data", Map.of("action", "sync")));
+        }
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -1018,6 +1546,58 @@ class E2EESession:
 # - NOT: message content
 ```
 
+<details>
+<summary>☕ <b>Java</b> — JCA — AES/GCM and SecureRandom are in the JDK</summary>
+
+```java
+// Java's built-in JCA covers all of this — no third-party crypto library.
+class E2EESession {
+    private byte[] chainKey;
+    private int    messageNumber = 0;
+
+    E2EESession(byte[] sharedSecret) {
+        this.chainKey = deriveChainKey(sharedSecret);   // HKDF
+    }
+
+    byte[] encrypt(byte[] plaintext) throws Exception {
+        // A fresh message key per message — that's what gives forward secrecy.
+        byte[] messageKey = deriveMessageKey(chainKey, messageNumber++);
+
+        byte[] nonce = new byte[12];
+        SecureRandom.getInstanceStrong().nextBytes(nonce);   // NEVER reuse a nonce
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE,
+                    new SecretKeySpec(messageKey, "AES"),
+                    new GCMParameterSpec(128, nonce));
+
+        byte[] ciphertext = cipher.doFinal(plaintext);
+
+        return ByteBuffer.allocate(nonce.length + ciphertext.length)
+                .put(nonce).put(ciphertext).array();
+    }
+
+    byte[] decrypt(byte[] encrypted) throws Exception {
+        byte[] nonce      = Arrays.copyOfRange(encrypted, 0, 12);
+        byte[] ciphertext = Arrays.copyOfRange(encrypted, 12, encrypted.length);
+
+        byte[] messageKey = deriveMessageKey(chainKey, messageNumber);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE,
+                    new SecretKeySpec(messageKey, "AES"),
+                    new GCMParameterSpec(128, nonce));
+
+        return cipher.doFinal(ciphertext);   // throws AEADBadTagException if tampered
+    }
+}
+// X25519 key agreement is KeyAgreement.getInstance("X25519") in JDK 11+.
+// Verify exact provider support for your JDK before relying on it.
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — E2EE in Production
@@ -1085,6 +1665,38 @@ def generate_safety_number(alice_identity_key: bytes, bob_identity_key: bytes) -
 # Users can compare safety numbers in person or via QR code
 # If they match, the E2EE session is verified (no MITM)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Arrays.compareUnsigned for the canonical ordering</summary>
+
+```java
+/** Users compare these to detect a man-in-the-middle. */
+String generateSafetyNumber(byte[] aliceKey, byte[] bobKey) throws Exception {
+    // Sort so both sides derive the SAME number regardless of who asks.
+    byte[] first  = compare(aliceKey, bobKey) <= 0 ? aliceKey : bobKey;
+    byte[] second = compare(aliceKey, bobKey) <= 0 ? bobKey   : aliceKey;
+
+    MessageDigest sha = MessageDigest.getInstance("SHA-256");
+    sha.update(first);
+    byte[] digest = sha.digest(second);
+
+    // 12 groups of 5 digits = a 60-digit safety number
+    StringJoiner out = new StringJoiner(" ");
+    for (int i = 0; i < 12; i++) {
+        int chunk = ByteBuffer.wrap(digest, i * 4, 4).getInt();
+        out.add(String.format("%05d", Math.floorMod(chunk, 100_000)));
+    }
+    return out.toString();
+}
+
+private static int compare(byte[] a, byte[] b) {
+    return Arrays.compareUnsigned(a, b);       // Java 9+
+}
+// floorMod matters — getInt() is signed, and % would yield a negative group.
+```
+
+</details>
+
 
 ---
 

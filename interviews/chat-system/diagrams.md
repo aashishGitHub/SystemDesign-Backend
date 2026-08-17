@@ -66,7 +66,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. HTTP can't express "the server speaks first", so the connection tier is stateful WebSockets.
+2. The crux is a connection registry mapping user → node, kept fresh by heartbeats.
+3. Snowflake-style message ids: globally unique and sortable without a coordinator.
+4. Persist before you ACK, into a per-conversation log with time buckets.
+5. Hop 2 is reaching the node holding the recipient's socket. The actual hard part.
+6. Group fan-out is async, always. Never a synchronous loop.
+7. Offline is a first-class state, not an error.
+8. Three states, three acknowledgements: sent → delivered → read.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **HTTP request/response cannot express "the server speaks first," so the connection tier is stateful WebSockets** behind an L4 load balancer — and stateful is the word that creates every other problem on this board.
 2. **The red registry is the crux: a connection registry mapping user → node**, kept fresh by heartbeats with a TTL. Alice's socket is on node 1; Bob's is on node 7. Without this you have no idea where to deliver.

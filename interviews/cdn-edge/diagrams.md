@@ -69,7 +69,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Anycast advertises one IP from many PoPs; BGP routes to the nearest.
+2. Classify content by cacheability before you touch a CDN setting.
+3. The cache key *is* the design. Strip tracking parameters.
+4. What happens on a miss distinguishes a senior answer: request collapsing.
+5. An origin shield collapses misses from many PoPs into one origin fetch.
+6. Purge is slow and rate-limited, so design not to need it.
+7. Edge compute runs the decisions a cache rule can't express.
+8. Close on the operational failure: vendor-wide CDN outages are real.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **First, how a user even reaches a PoP** — and the distinction interviewers probe: **Anycast** advertises one IP from many PoPs and lets BGP route to the nearest one *in network topology* (not necessarily geography); **GeoDNS** hands out different IPs based on the *resolver's* location, which is blind to the case where the resolver isn't near the client (public DNS resolvers break this assumption).
 2. **The first red box, and the move that sets up everything else: classify content by cacheability before you touch a CDN setting.** Immutable assets get long TTLs under versioned keys. Video segments are immutable; the *manifest* is not, so it gets a short TTL. HTML and API responses get short TTLs or `no-store`. Treating these alike either serves stale dynamic data or misses the 95% target — and the classification is driven by `Cache-Control` on the **origin response**, not by CDN-side rules.

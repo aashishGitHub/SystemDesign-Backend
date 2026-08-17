@@ -36,7 +36,7 @@
 | [questions.md](./questions.md) | 35+ questions organized by level. Attempt before reading answers. |
 | [answers.md](./answers.md) | Full answers with HTTP headers, config snippets, tradeoff tables, real incidents. |
 | [deep-dive.md](./deep-dive.md) | In-depth explanations at beginner, senior, and architect depth — with capacity math. |
-| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its 60-second narration, the numbers that justify it, the patterns it assembles, the three things that break, and the AWS traps to name unprompted. Revise from this first. |
+| [diagrams.md](./diagrams.md) | **🎯 The one-page master diagram** — the single diagram to reproduce on the whiteboard, with its **60-second narration** and **3-minute walkthrough**, the numbers that justify it, the patterns it assembles, the three things that break, and the AWS traps to name unprompted. Revise from this first. |
 
 ---
 
