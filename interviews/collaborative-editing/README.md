@@ -8,11 +8,13 @@
 
 ## How to Use This Guide
 
+0. **Short on time?** Read [collaborative-editing-v2.md](./collaborative-editing-v2.md) alone — it compresses this whole folder to one screen, and links back to everything below.
 1. Skim [simple-diagram.md](./simple-diagram.md) first — it names the **central split** (sync plane vs calc plane) in one screen.
 2. Attempt every question in [questions.md](./questions.md) cold before reading answers.
 3. Check [answers.md](./answers.md) — compare your reasoning; each answer ends with a **Key takeaway** you can say under pressure.
 4. Whiteboard from [diagrams.md](./diagrams.md) — start with Diagram 1 (the two-plane architecture).
 5. Go deep with [deep-dive.md](./deep-dive.md) — 🟢 Beginner → 🟡 Senior → 🔴 Architect depth, failure modes, and real-world case notes.
+6. Rehearse out loud from the **🎤 30-Minute Interview Transcript** at the end of [diagrams.md](./diagrams.md) — read it on a timer while drawing the master diagram.
 
 ---
 
@@ -36,11 +38,13 @@
 
 | File | Purpose |
 |---|---|
-| [simple-diagram.md](./simple-diagram.md) | **Start here.** Bare-minimum two-plane model + a detailed version with real services/protocols. |
+| [collaborative-editing-v2.md](./collaborative-editing-v2.md) | **⚡ Revising? Start here.** The whole topic on one screen — 10-minute read, drawable diagrams, the script links, the cheat sheet. |
+| [simple-diagram.md](./simple-diagram.md) | **Learning it first time? Start here.** Bare-minimum two-plane model + a detailed version with real services/protocols. |
 | [questions.md](./questions.md) | 42 structured questions (9 levels) + 6 bonus. Attempt cold first. |
 | [answers.md](./answers.md) | Every answer with code or comparison table; each ends with a **Key takeaway**; ends with a Quick Revision Cheatsheet. |
 | [diagrams.md](./diagrams.md) | 11 Mermaid diagrams (start with Diagram 1 — the two-plane split). |
 | [deep-dive.md](./deep-dive.md) | 🟢 Beginner → 🟡 Senior → 🔴 Architect depth, real-world Docs/Sheets/Figma notes, failure modes. |
+| [system-design-concepts.md](./system-design-concepts.md) | Comparison matrices — text vs spreadsheet, OT vs CRDT, component choices, canonical tradeoffs. |
 
 ---
 
