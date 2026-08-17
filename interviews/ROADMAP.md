@@ -21,7 +21,7 @@
 
 ### 🎯 Master-diagram coverage — **29 / 29 topic folders complete**
 
-Every topic folder now ends its `diagrams.md` with the **🎯 One-Page Master Diagram** ([`docs/instructions.md` §2.1](../docs/instructions.md)) — the single artifact to revise from the night before and reproduce on the whiteboard. Each one carries: the central split in one sentence · the master Mermaid diagram (numbered flow, AWS + pattern annotations, red on the 2–3 hard parts) · a 60-second narration, one line per numbered box · the five numbers that justify the design, with derivations · the patterns it assembles · the three things that break, with blast radius / mitigation / detection · and an **AWS traps to name unprompted** table.
+Every topic folder now ends its `diagrams.md` with the **🎯 One-Page Master Diagram** ([`docs/instructions.md` §2.1](../docs/instructions.md)) — the single artifact to revise from the night before and reproduce on the whiteboard. Each one carries: the central split in one sentence · the master Mermaid diagram (numbered flow, AWS + pattern annotations, red on the 2–3 hard parts) · a **60-second narration** (one ≤15-word line per numbered box) and a **3-minute walkthrough** (the same edges, with the reasoning) · the five numbers that justify the design, with derivations · the patterns it assembles · the three things that break, with blast radius / mitigation / detection · and an **AWS traps to name unprompted** table.
 
 | | Folders |
 |---|---|

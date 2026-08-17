@@ -67,7 +67,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The gateway is a product boundary, not a proxy.
+2. Choose the protocol per consumer. "REST vs GraphQL vs gRPC" is a false choice.
+3. The contract is the thing you can't take back.
+4. `POST` is not idempotent, so retries need a client-generated idempotency key.
+5. Cursor/keyset pagination, always, for anything large.
+6. One error shape everywhere, carrying a `request_id` that joins to traces.
+7. Evolution is a process, not a version number.
+8. The gateway validates *authentication*. The service enforces *authorization*.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The gateway is where authentication, validation, rate limiting, routing and observability converge** — it's a product boundary, not a proxy. And say the obvious risk out loud: it must not become the single point of failure, so it's multi-AZ and stateless.
 2. **The first red box: choose the protocol per consumer, and reject the framing of the question.** "REST vs GraphQL vs gRPC" is a false choice — the industry-standard answer is a multi-protocol surface: REST for public and partner consumers (cacheable, universal, debuggable), GraphQL where a frontend needs to pick its fields in one round trip over a slow network, gRPC internally for typed, binary, streaming calls. Note gRPC's real weakness: no native browser support without a proxy.
