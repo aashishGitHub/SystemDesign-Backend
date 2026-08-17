@@ -310,6 +310,37 @@ def handle_request_vote(req):
     return Reply(current_term, vote_granted=False)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+Reply handleRequestVote(RequestVote req) {
+    if (req.term() < currentTerm) {
+        return new Reply(currentTerm, false);
+    }
+    if (req.term() > currentTerm) {              // newer term seen → step down
+        currentTerm = req.term();
+        votedFor    = null;
+        state       = State.FOLLOWER;
+    }
+
+    // Up-to-date check: the candidate's log must be at least as current as mine.
+    boolean upToDate = req.lastLogTerm() > myLastLogTerm
+            || (req.lastLogTerm() == myLastLogTerm
+                && req.lastLogIndex() >= myLastLogIndex);
+
+    if ((votedFor == null || votedFor.equals(req.candidateId())) && upToDate) {
+        votedFor = req.candidateId();            // at most one vote per term
+        resetElectionTimer();
+        return new Reply(currentTerm, true);
+    }
+    return new Reply(currentTerm, false);
+}
+```
+
+</details>
+
+
 **No two leaders in one term:** each node votes at most once per term, and a majority is required to win. Two candidates cannot each collect a majority in the same term because any two majorities overlap on a node that only voted once. Split votes (no majority) simply cause the term to end with no leader; a new randomized timeout fires and a new term/election begins.
 
 ---
@@ -357,6 +388,35 @@ def handle_append_entries(req):
         commit_index = min(req.leader_commit, index_of_last_new_entry)
     return Reply(current_term, success=True)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+Reply handleAppendEntries(AppendEntries req) {
+    if (req.term() < currentTerm) {
+        return new Reply(currentTerm, false);
+    }
+    resetElectionTimer();
+
+    // Consistency check: my log must already match the leader at prevLogIndex.
+    if (req.prevLogIndex() >= log.size()
+            || log.get(req.prevLogIndex()).term() != req.prevLogTerm()) {
+        return new Reply(currentTerm, false);        // gap or mismatch → reject
+    }
+
+    // Delete any conflicting suffix, then append the new entries.
+    appendAndOverwriteConflicts(req.entries(), req.prevLogIndex() + 1);
+
+    if (req.leaderCommit() > commitIndex) {
+        commitIndex = Math.min(req.leaderCommit(), indexOfLastNewEntry);
+    }
+    return new Reply(currentTerm, true);
+}
+```
+
+</details>
+
 
 Each `AppendEntries` includes `prevLogIndex`/`prevLogTerm` — the entry immediately before the new ones. The follower accepts only if it already has a matching entry there. **On rejection, the leader decrements `nextIndex` for that follower and retries**, walking backward until it finds the last point where the logs agree, then overwrites the follower's divergent suffix forward. This is how a follower with a stale or divergent tail is repaired to match the leader exactly.
 
@@ -549,6 +609,42 @@ def campaign(zk, path="/election"):
         # loop re-evaluates leadership after predecessor disappears
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Curator — and note LeaderLatch already does this</summary>
+
+```java
+String campaign(CuratorFramework zk, String path) throws Exception {
+    // Ephemeral + sequential: the node vanishes if this JVM dies.
+    String myNode = zk.create()
+            .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
+            .forPath(path + "/n_");
+
+    while (true) {
+        List<String> children = new ArrayList<>(zk.getChildren().forPath(path));
+        Collections.sort(children);
+
+        int mySeq = children.indexOf(basename(myNode));
+        if (mySeq == 0) return "I AM LEADER";        // lowest sequence wins
+
+        // Watch ONLY the next-lower node — watching all of them is the
+        // herd effect: one departure wakes every waiter.
+        String predecessor = children.get(mySeq - 1);
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Stat exists = zk.checkExists()
+                .usingWatcher((CuratorWatcher) e -> latch.countDown())
+                .forPath(path + "/" + predecessor);
+
+        if (exists != null) latch.await();           // sleep until predecessor gone
+        // loop re-evaluates leadership
+    }
+}
+// In practice: use Curator's LeaderLatch, which implements exactly this.
+```
+
+</details>
+
+
 **Exactly one leader:** the sequence numbers give a total order, so there is always exactly one lowest node. **Herd-effect avoided:** if all N candidates watched the leader, a leader death would wake all N at once (a thundering herd of N re-reads). Watching only your immediate predecessor means a single death wakes exactly *one* node — the next in line — turning an O(N) stampede into O(1) work per failover.
 
 ---
@@ -599,6 +695,25 @@ token2 = lock_service.acquire("job-42")   # Client 2 gets 34
 storage.write(data, fencing_token=34)     # Client 2: accepted, records 34
 storage.write(data, fencing_token=33)     # Client 1 wakes up: 33 < 34 → REJECTED
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same fencing sequence</summary>
+
+```java
+// The lock service issues a monotonically increasing token with each grant.
+long token1 = lockService.acquire("job-42");   // returns 33
+// ... Client 1 pauses (GC, VM freeze); lease expires ...
+long token2 = lockService.acquire("job-42");   // Client 2 gets 34
+
+// The RESOURCE rejects any write carrying a token <= the last one it saw.
+storage.write(data, 34);   // Client 2: accepted, records 34
+storage.write(data, 33);   // Client 1 wakes up: 33 < 34 → REJECTED
+
+// The lock is never the guarantee. The resource enforcing the token is.
+```
+
+</details>
+
 
 **Key insight:** you cannot make the *lock hold* perfectly safe (any process can freeze at any time), so you make the *effect* safe. The resource remembers the highest token it has served and rejects anything stale. A lock alone is advisory; a lock **plus fencing** is enforceable. This is the standard answer, popularized in Martin Kleppmann's writing on distributed locking.
 

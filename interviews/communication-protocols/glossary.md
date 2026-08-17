@@ -118,6 +118,20 @@ cache.set(key, value, ttl=ttl)
 # Different keys expire at 3000s, 3421s, 3987s... spread over a 20-min window
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+static final int BASE_TTL = 3600;   // 1 hour base
+static final int JITTER   = 600;    // ± up to 10 minutes
+
+int ttl = BASE_TTL + ThreadLocalRandom.current().nextInt(-JITTER, JITTER + 1);
+cache.set(key, value, Duration.ofSeconds(ttl));
+// Different keys expire at 3000s, 3421s, 3987s... spread over a 20-min window
+```
+
+</details>
+
 **The retry-jitter variant** (mentioned in the deep-dive circuit breaker section) applies the same idea to exponential backoff: instead of all workers sleeping exactly `2^attempt` seconds, each sleeps a *random fraction* of that maximum, so retries scatter across the window instead of spiking together:
 
 ```
@@ -248,6 +262,17 @@ channel.basic_qos(prefetch_count=20)
 # until the consumer has acked at least one of the 20 it holds.
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same call, camelCase in the Java client</summary>
+
+```java
+channel.basicQos(20);
+// The broker will not deliver message 21 to this consumer
+// until the consumer has acked at least one of the 20 it holds.
+```
+
+</details>
+
 **Effect:**
 - **Fair dispatch:** each consumer in a pool gets no more than `N` jobs in flight. Work is distributed evenly, not front-loaded onto the first responder.
 - **Backpressure:** a slow consumer automatically slows the broker's delivery rate to it, without blocking other consumers.
@@ -282,6 +307,24 @@ channel.exchange_declare('orders.dlx', exchange_type='direct')
 channel.queue_declare('orders.dead', durable=True)
 channel.queue_bind('orders.dead', 'orders.dlx', routing_key='orders')
 ```
+
+<details>
+<summary>☕ <b>Java</b> — RabbitMQ Java client</summary>
+
+```java
+Map<String, Object> args = new HashMap<>();
+args.put("x-dead-letter-exchange", "orders.dlx");   // route dead letters here
+args.put("x-max-retries", 5);                       // library-level; not native AMQP
+
+// queueDeclare(queue, durable, exclusive, autoDelete, arguments)
+channel.queueDeclare("orders", true, false, false, args);
+
+channel.exchangeDeclare("orders.dlx", BuiltinExchangeType.DIRECT);
+channel.queueDeclare("orders.dead", true, false, false, null);
+channel.queueBind("orders.dead", "orders.dlx", "orders");
+```
+
+</details>
 
 **DLX vs DLQ:** technically a DLX is the *exchange* that dead letters are published to; a DLQ (Dead-Letter Queue) is the *queue* bound to that exchange. In practice these terms are used interchangeably because you always use them together.
 

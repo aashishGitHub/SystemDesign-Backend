@@ -482,7 +482,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Gateways are stateless and route by `doc_id`. All state lives one hop in.
+2. Each document has exactly one in-memory owner, protected by a lease and fencing token.
+3. Sync plane: each op is transformed against the server's order, then assigned a revision.
+4. The red box is the signature hard problem: structural operations.
+5. Calc plane: dirty-mark, topologically sort dependents, recompute only that subtree.
+6. The durability rule: append to the op log before you ACK.
+7. Presence is a separate, throttled, lossy channel.
+8. Idle documents flush a snapshot and unload.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Gateways are stateless and route by `doc_id`.** All the state lives one hop in, so the fleet that terminates WebSockets can scale and restart freely.
 2. **Each document has exactly one in-memory owner, protected by a lease and a fencing token.** This is the move that makes everything else cheap: a single writer turns "agree on op order" into a plain append — no per-op consensus, no clock sync. The fencing token is what makes it *safe* under a partition: storage rejects appends carrying a stale ownership epoch, so a partitioned old owner physically cannot double-write.
@@ -534,3 +547,82 @@ flowchart LR
 ### If you only remember one thing
 
 > **Merge inputs, recompute outputs: the sync plane converges the raw cells (OT against a single writer's total order) and the calc plane deterministically recomputes only the dirty subtree — with one owner per document held by a lease *and* a fencing token, and the op appended to the log before it is ever ACKed.**
+
+---
+
+### 🎤 30-Minute Interview Transcript — What to Actually Say
+
+> Practice reading this OUT LOUD while drawing the master diagram live. Timestamps are a
+> budget, not a stopwatch — the ORDER (R→A→D→I→O→Close) is what must hold.
+>
+> Register is **Senior / Principal**: narrate *decisions*, not components. Every box gets a *because*.
+
+#### [00:00–03:00] Open — scope it out loud before drawing anything
+
+- "Let me restate it. Many people open one spreadsheet and edit a grid at the same time. Cells hold values or formulas. Formulas recompute automatically. Everyone sees changes and cursors live. There's history and undo."
+- "Before I draw, let me scope. I'll design for a single region and assume auth already exists. I'll spend most of the time on convergence and recompute, because that's where this problem actually lives. Tell me if you'd rather I cover sharing or import/export instead."
+- "One framing point I want to make early, because it drives everything: **this is two agreement problems, not one.** The sync plane agrees on what people typed. The calc plane agrees on what the formulas produced. Docs only has the first. The second is what makes Sheets hard."
+- "So I'm going to keep those two planes separate the whole way through."
+
+#### [03:00–06:00] Size it in my head
+
+- "Let me get the shape before I pick anything."
+- "A single editor produces about one to five ops a second once you coalesce typing. Ten editors on a busy document is roughly fifty ops a second. **That's tiny.**"
+- "That number matters more than it looks. Almost every instinct from chat or feed design is wrong here. This is not a throughput problem, so I'm not going to shard within a document."
+- "Where it *is* expensive is memory. A million live documents at one to ten megabytes each is one to ten terabytes of RAM. Against maybe a hundred million documents total."
+- "So memory is sized by *active* documents and storage by *total*. That tells me the architecture: many small stateful sessions, and idle ones have to unload. That's mandatory, not an optimization."
+- "Last number: remote edits need to be visible in about a hundred to two hundred milliseconds, and local edits have to feel instant. So the client applies optimistically and the round trip never gates a keystroke."
+
+#### [06:00–16:00] Draw the architecture, narrating each decision
+
+1. "First the two planes, because the geometry should carry the idea." — *draw the dividing line, label SYNC above and CALC below*
+2. "Gateways at the front, and they're **stateless** — they route by `doc_id`. I want all the state one hop in, so the fleet terminating WebSockets can scale and restart freely."
+3. "WebSocket for edits, because the server has to push *other people's* ops to you. A request/response protocol structurally can't do that."
+4. "Now the decision the whole design rests on: **exactly one in-memory owner per document.** A single writer turns 'agree on op order' into a plain append. No per-op consensus, no clock sync. And recompute needs the whole sheet in one place anyway, so I get that for free."
+5. "I'm choosing **OT over CRDT** here, and I'll say why rather than assert it. The server is already present, so I don't need coordinator-free merge. And at ten million cells, per-element CRDT identities get expensive. For a local-first app I'd flip that decision."
+6. "Durability rule, and this is one sentence: **append the op to the log before you ACK it.** A crash can then only lose edits that were never acknowledged, and clients resubmit those idempotently."
+7. "Snapshots periodically, so replay on recovery is bounded. Snapshot plus the op tail *is* the document — which also gives me version history for free."
+8. "Down into the calc plane. A changed cell dirty-marks its transitive dependents, I topologically sort them, and I recompute **only that subtree**. Never a full rescan."
+9. "Computed values flow back out as ordered ops through the same sync path. I want to be explicit: **I never merge computed values. I merge inputs and recompute outputs.**"
+10. "And presence — cursors — goes on a completely separate channel. Throttled, lossy, best-effort. A mouse movement must never block a keystroke."
+
+#### [16:00–19:00] Data model — say this fast
+
+- "A sheet is almost entirely empty, so it's a **sparse map, not a dense array.** Twenty-six columns by a hundred thousand rows is millions of addressable cells and maybe a few thousand populated."
+- "A cell is a record, not a value. It holds the formula source *and* the last computed value, because I need both — one to recompute, one to render."
+- "Formulas parse to an AST with references, and I keep precedents and dependents per cell so the dependency graph is maintained incrementally as people type."
+- "And the important one: **cells are addressed by stable `(row_id, col_id)`, not by display coordinates.** I'll come back to why in the deep dive — it's the crux of the hardest problem here."
+
+#### [19:00–21:00] API — the handful that matter
+
+- "`WS /docs/{id}` to open — authorize, return the snapshot plus the head revision, then stream ordered ops."
+- "`submit(op, base_rev)` — the server transforms, orders, ACKs, broadcasts."
+- "A separate `presence(cursor)` channel, deliberately not on the edit path."
+- "`GET /docs/{id}/history` for version browse and restore."
+- "Every op carries the revision it was based on and gets an assigned revision back. That's what lets a client notice it got 41 then 43, and ask for a resync."
+
+#### [21:00–29:00] Deep dive — the two hardest parts
+
+**Deep dive 1 — Structural operations (~5 min)**
+
+- "This is the part I'd want to spend real time on, because it's what separates Sheets from Docs."
+- "**The bottleneck:** someone inserts a row above row 5 while someone else is writing `=SUM(A1:A6)` in A7. A row insert shifts every address below it *and* rewrites every formula reference below it. Both planes, at once. In Docs an edit only ever perturbs a one-dimensional character position."
+- "**Options.** I could rewrite addresses on every structural op — that's O(sheet) and it races. Or I could give rows and columns stable identities so addresses don't move at all."
+- "**I pick stable identities:** `(row_id, col_id)`, never display coordinates. Then references need explicit transform rules for the three cases — a reference that starts before the boundary, one that ends inside it, one that spans it."
+- "**The failure mode is what worries me most.** Get this wrong and you don't crash. You produce a *plausible wrong number*. A user sees a total that's quietly incorrect. That's the worst bug class in this system, so this is where I'd put property-based convergence tests in CI rather than example tests."
+
+**Deep dive 2 — Single-writer safety under partition (~4 min)**
+
+- "**The bottleneck:** my whole design leans on one owner per document. So what happens when that owner is partitioned rather than dead?"
+- "A naive lease isn't enough. The old owner still thinks it holds the document, and two writers appending to one log produces an unmergeable history. That's silent corruption, not an outage."
+- "**So the lease says who owns it, and a fencing token is what makes it safe.** Every append carries a monotonic ownership epoch, and the *storage layer* rejects a stale one. The partitioned owner physically cannot write."
+- "The general point, and it's worth saying: **the lock is never the guarantee. The resource enforcing it is.**"
+- "**How I'd detect it:** a rejected-stale-epoch counter — it should be rare but non-zero during failover — plus lease-renewal failure rate."
+- "The honest cost of single-writer: someone is always far from the sequencer. Two teams a quarter-second apart means one of them eats that latency. I'd take it here, because losing a clean total order costs me far more than it saves."
+
+#### [29:00–30:00] Close
+
+- "If you take one thing from this: **merge inputs, recompute outputs.** The sync plane converges the raw cells against a single writer's total order, and the calc plane deterministically recomputes only the dirty subtree — with one owner per document held by a lease *and* a fencing token, and the op appended to the log before it's ever ACKed."
+- "Push back if you'd have gone CRDT — I can defend that direction too, it just trades differently."
+
+> 💡 **Practice tip:** read this aloud on a timer until the *structure* is internalized, not the words. An interviewer will interrupt you around minute eight, and what has to survive is the order — scope, size, draw, model, API, two deep dives, close.

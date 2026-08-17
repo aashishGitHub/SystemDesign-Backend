@@ -558,7 +558,20 @@ flowchart TB
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The first cut is sync vs async, and it is a *coupling* decision.
+2. If sync: REST for public, gRPC for internal, GraphQL for mobile aggregation.
+3. If async, the broker buffers, and the shape question comes next.
+4. The red box: is my failure unit per *message*, or per *partition*?
+5. Pushing to a browser is its own axis: WebSocket bidirectional, SSE server-only.
+6. Exactly-once delivery is impossible across a network. Build at-least-once plus idempotency.
+7. Backpressure exists in every transport, but each expresses it differently.
+8. Contract evolution is one principle in three costumes: never break an existing reader.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The first cut is sync vs async, and it is a *coupling* decision.** Ask one question: does the caller need the answer to continue right now? Synchronous means temporal coupling — if B is down, A is degraded. Async means a broker holds the message and the two services never have to be up at the same time. Candidates who skip straight to "I'd use Kafka" have skipped the actual decision.
 2. **If sync:** REST for public, cacheable, universal CRUD; gRPC for internal, typed, low-latency, streaming calls (HTTP/2 gives multiplexing and all four streaming modes); GraphQL when a mobile client needs to pick its fields in one round trip — and immediately name the N+1 problem and DataLoader batching, because that's the follow-up.

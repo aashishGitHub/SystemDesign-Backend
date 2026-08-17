@@ -436,6 +436,29 @@ channel.basic_publish('orders', routing_key='order.us.paid', body=payload,
                       properties=pika.BasicProperties(delivery_mode=2))  # persistent msg
 ```
 
+<details>
+<summary>☕ <b>Java</b> — RabbitMQ Java client (com.rabbitmq.client)</summary>
+
+```java
+ConnectionFactory factory = new ConnectionFactory();
+factory.setHost("broker");
+
+try (Connection connection = factory.newConnection();
+     Channel channel = connection.createChannel()) {   // cheap, multiplexed over the TCP conn
+
+    channel.exchangeDeclare("orders", BuiltinExchangeType.TOPIC);
+    channel.queueDeclare("us-orders", true, false, false, null);  // durable -> survives restart
+    channel.queueBind("us-orders", "orders", "order.us.*");       // binding key
+
+    AMQP.BasicProperties props = new AMQP.BasicProperties.Builder()
+            .deliveryMode(2)                                      // persistent message
+            .build();
+    channel.basicPublish("orders", "order.us.paid", props, payload);
+}
+```
+
+</details>
+
 **Queues vs Streams:**
 
 | Use case | Pick |
@@ -456,6 +479,15 @@ A **quorum queue** is a replicated queue using a consensus protocol across nodes
 ```python
 channel.basic_qos(prefetch_count=20)   # don't hand a consumer >20 unacked at once
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same call, camelCase in the Java client</summary>
+
+```java
+channel.basicQos(20);   // don't hand a consumer >20 unacked at once
+```
+
+</details>
 
 **Poison-message failure mode:** a message that always fails (malformed payload) gets redelivered forever, blocking the queue and burning CPU. Fix: configure a [**Dead-Letter Exchange (DLX)**](./glossary.md#dead-letter-exchange-dlx) + max-retry/TTL so a message that exceeds N attempts routes to a dead-letter queue for inspection instead of looping.
 
