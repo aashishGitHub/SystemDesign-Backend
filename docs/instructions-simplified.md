@@ -12,7 +12,7 @@
 
 ---
 
-## 0. The six rules that matter most
+## 0. The seven rules that matter most
 
 ### Rule 1 — Lead with the central split
 
@@ -51,7 +51,7 @@ Full spec in [§2](#2-diagram-rules--tier-d-and-tier-r). Use **more** diagrams t
 
 Every topic assembles [`patterns/`](../patterns/README.md) — recurring sub-problems that already have write-ups.
 
-- The README carries a **Patterns in play** table (see [§4](#4-file-by-file-spec)).
+- The README carries a **Patterns in play** table (see [§5](#5-file-by-file-spec)).
 - An answer that hits a pattern links to the exact section. It does not re-derive it. Example: *"this is rung 1 of the contention ladder — a conditional write,"* linking `[contention ladder](../../patterns/dealing-with-contention.md#4-rung-1-conditional--atomic-writes)`. Paths in this guide are relative to `interviews/<topic>/`, where they'll live.
 - Need a sub-problem that isn't in `patterns/` yet? Add it to the gap list in [`patterns/README.md`](../patterns/README.md#gaps--recurring-sub-problems-not-yet-written-up). Don't bury the only copy inside one topic.
 
@@ -97,7 +97,17 @@ Rules for the marker:
 3. It never carries load-bearing content. If an answer *needs* it, the answer is wrong — say the short version inline.
 4. `README.md`, `simple-diagram.md`, and `questions.md` carry **no** deep blocks at all. They are the shallow end.
 
-Inside `deep-dive.md`, mark every section with its depth tier: 🟢 beginner · 🟡 senior · 🔴 staff/architect. See [§4](#deep-divemd).
+Inside `deep-dive.md`, mark every section with its depth tier: 🟢 beginner · 🟡 senior · 🔴 staff/architect. See [§5](#deep-divemd).
+
+### Rule 7 — Cut depth, never coverage
+
+Most topics start from a real source: a vendor doc, a paper, an engineering blog. You are not summarizing it. You are **compressing it into what survives an interview**.
+
+Cut the detail under a subsystem. Never cut the subsystem.
+
+A reader must not discover mid-interview that a whole part of the system was missing from their notes. Depth is negotiable. Coverage is not.
+
+The full method — nine moves and a worksheet — is in [§3](#3-simplifying-a-source-doc--the-compression-method).
 
 ---
 
@@ -146,7 +156,7 @@ Never introduce two new terms in one sentence.
 
 "Very fast" says nothing. "p99 is 200 ms" says everything.
 
-Every claim of scale, speed, or size carries the number and where it came from. See [§6](#6-accuracy-rules-non-negotiable) for how to hedge numbers honestly.
+Every claim of scale, speed, or size carries the number and where it came from. See [§7](#7-accuracy-rules-non-negotiable) for how to hedge numbers honestly.
 
 ### 1.5 Headings
 
@@ -242,7 +252,7 @@ Tier R is annotated and dense: real service names, protocols, TTLs, colour by me
 Allowed **only** in:
 1. The **detailed** second half of `simple-diagram.md`.
 2. `deep-dive.md`.
-3. The one-page master diagram ([§4.1](#41-the-one-page-master-diagram)).
+3. The one-page master diagram ([§5.1](#51-the-one-page-master-diagram)).
 
 Every Tier R diagram is tagged, directly above the fence:
 
@@ -264,7 +274,160 @@ Mix them. A topic with eleven flowcharts and nothing else is under-thought.
 
 ---
 
-## 3. Folder anatomy
+## 3. Simplifying a source doc — the compression method
+
+Most topics start from a real source. A vendor doc, a paper, an engineering blog.
+
+Your job is not to summarize it. Your job is to compress it into what survives an interview (Rule 7).
+
+### 3.1 The worked comparison — study these two pages
+
+| Role | Page |
+|---|---|
+| **The source** | [Apache Cassandra — Dynamo architecture](https://cassandra.apache.org/doc/latest/cassandra/architecture/dynamo.html) |
+| **The compression** | [Hello Interview — Cassandra](https://www.hellointerview.com/learn/system-design/deep-dives/cassandra) |
+
+Read them side by side once. The difference in shape is the whole lesson.
+
+| | Apache doc | Hello Interview |
+|---|---|---|
+| Organised by | implementation module | what a candidate says |
+| Opens with | partitioning internals | the data model you'd type |
+| New terms introduced | many (~60) | far fewer (~20) |
+| Diagrams | 2 | ~5 |
+| Worked examples | 0 | 2 (Discord, Ticketmaster) |
+| "When to use it" section | none | yes |
+| Reader assumed | distributed-systems background | knows SQL |
+
+> ⚠️ These counts are approximate, from one reading of each page. They show the *direction* of the change, not exact figures. Don't quote them as data (§7).
+
+Both pages cover the same system. One documents it. The other prepares you to *defend* it.
+
+### 3.2 The nine moves
+
+**Move 1 — Re-order from "how it's built" to "how you'd use it."**
+
+The Apache doc opens with partitioning internals. The interview version opens with the data model — the thing you actually type.
+
+Build order is not learning order. Lead with what the reader touches.
+
+**Move 2 — Sort every concept into explain / name / cut. Write the list down.**
+
+Three tiers, not two:
+
+| Tier | Treatment | Why it exists |
+|---|---|---|
+| **Explain** | A diagram and a paragraph. You can derive it. | This is what you'd draw. |
+| **Name** | One sentence. The word, no mechanics. | Buys you a follow-up you can survive. |
+| **Cut** | Never appears. | It would cost time and win nothing. |
+
+Cassandra, as sorted by the interview version:
+
+- **Explain** — consistent hashing, replication strategy, tunable consistency, the LSM write path, query routing, gossip.
+- **Name** — Bloom filters, vector clocks, compaction, Merkle trees. Said once, mechanics skipped.
+- **Cut** — transient replication, seed-node config, sub-range vs incremental repair, the 2.x/3.x token allocator, JIRA references.
+
+The test for *cut*: **would you ever say this out loud in 45 minutes?** Production knobs are operator surface, not interview surface.
+
+The **name** tier is the one people miss. It's cheap and it's armour.
+
+**Move 3 — Cut depth, never coverage.**
+
+This is what makes "high level yet complete" possible.
+
+Every subsystem in the source still appears in the compression: partitioning, replication, consistency, routing, storage, gossip, failure detection. What shrank is the detail under each pin. Nothing vanished from the map.
+
+Run the coverage check explicitly. List the source's top-level sections. Tick each one off against your topic folder.
+
+**Move 4 — Teach the formula, name two instances, drop the catalog.**
+
+The Apache doc enumerates nine consistency levels. The interview version teaches `W + R > RF`, then names the two you'd actually pick.
+
+The formula is portable. The catalog is lookup.
+
+Same move applies to isolation levels, EC2 instance families, Redis eviction policies, HTTP status codes.
+
+**Move 5 — Replace a warning with a failure story.**
+
+A warning is forgettable. A story is not.
+
+> Source: "large partitions degrade performance."
+>
+> Compression: Discord keys messages by `(channel_id, message_id)`. A busy channel becomes one huge partition. So they add a 10-day bucket to the partition key.
+
+Every constraint you want remembered gets three beats: **naive design → the number that breaks it → the fix.**
+
+That structure is already the answer to a follow-up question. Write constraints this way and you get the answer for free.
+
+**Move 6 — Bridge from what the reader already knows.**
+
+"Partition key and clustering key work like DynamoDB's partition and sort key." "Relational says normalize. Cassandra says denormalize."
+
+The source defines from first principles because it can't assume a reader. You can. Anchor to SQL, to a familiar service, or to daily life ([§1.6](#16-analogy-first-mechanics-second)).
+
+**Move 7 — Trade jargon for diagrams.**
+
+The source carries many terms and two diagrams. The compression inverts that.
+
+**The more terms a section introduces, the more it needs a picture.** A diagram replaces a paragraph. It doesn't decorate one.
+
+If a section introduces three new terms and has no diagram, that's the section to draw next.
+
+**Move 8 — Drop version history and provenance — except the one line that compresses.**
+
+Cut: 2.x vs 3.x token allocators, "experimental in 4.0", the Chord citation, JIRA links.
+
+Keep: *"Cassandra takes partitioning and membership from Dynamo, and the storage engine from Bigtable."*
+
+That one sentence compresses the whole architecture. Provenance earns space only when it's a shortcut.
+
+**Move 9 — Add the section the source can't have.**
+
+A vendor doc documents the system. You document **the decision to use the system**.
+
+When to reach for it. Where it breaks. What you'd swap to.
+
+That's the `<Topic> in an Interview` README section ([§5](#5-file-by-file-spec)). It has no counterpart in the source. It's the highest-value thing you add.
+
+### 3.3 The compression worksheet
+
+Fill this in before writing a topic that has a source doc.
+
+```text
+SOURCE:         <url>
+CENTRAL SPLIT:  <one sentence — Rule 1>
+
+EXPLAIN (5–8 max — each one gets a Tier D diagram)
+  1. …
+  2. …
+
+NAME ONLY (say the word, one sentence, no mechanics)
+  - …
+
+CUT (operator knobs, version history, experimental features, citations)
+  - …
+
+FAILURE STORIES (naive design → the number that breaks it → the fix)
+  1. …
+
+BRIDGES (new thing → thing the reader already knows)
+  - … is like …
+
+COVERAGE CHECK (every top-level section of the source appears somewhere)
+  [ ] …   [ ] …   [ ] …
+
+THE SECTION THE SOURCE CAN'T HAVE
+  When to use:      …
+  Where it breaks:  …
+```
+
+If **EXPLAIN** has more than eight rows, you haven't compressed. You've reformatted.
+
+If **CUT** is empty, you haven't read the source properly.
+
+---
+
+## 4. Folder anatomy
 
 Every topic folder contains these files. Create in this order:
 
@@ -292,7 +455,7 @@ docs/RADIO_FRAMEWORK.md     how to perform in the room  R·A·D·I·O timeboxing
 
 ---
 
-## 4. File-by-file spec
+## 5. File-by-file spec
 
 ### `README.md`
 
@@ -396,7 +559,7 @@ No `deep-dive` blocks in this file (Rule 6).
   5. A **What the interviewer is checking:** list — 3–4 bullets on the *signal*, not the content.
 - Mix diagram types ([§2.5](#25-diagram-type-by-content)).
 - Then a **Quick Interview Reference**: scale numbers, a domain quick-ref table, canonical tradeoffs, common mistakes.
-- **Finally — required — the one-page master diagram.** See [§4.1](#41-the-one-page-master-diagram).
+- **Finally — required — the one-page master diagram.** See [§5.1](#51-the-one-page-master-diagram).
 
 ### `deep-dive.md`
 
@@ -418,7 +581,7 @@ The sentence rules ([§1](#1-house-style--the-sentence-rules)) still apply here.
 
 ---
 
-### 4.1 The One-Page Master Diagram
+### 5.1 The One-Page Master Diagram
 
 *(final section of `diagrams.md`)*
 
@@ -493,7 +656,7 @@ This is the one Tier R diagram in `diagrams.md`. Tag it as such.
 
 > **Why last and not first?** Writing it needs everything else to exist. Reading it is the reverse — it's the first thing you open when revising. Authoring order and reading order are deliberately opposite.
 
-### 4.2 Optional — The 30-Minute Spoken Transcript
+### 5.2 Optional — The 30-Minute Spoken Transcript
 
 **The problem it solves.** The 60-second narration proves you can *summarize*, and the 3-minute walkthrough proves you can explain. It doesn't prove you can *perform* 30 minutes under pressure — hold the RADIO budget, narrate while drawing, field a deep-dive, land the close.
 
@@ -527,11 +690,11 @@ Add this only to a topic you're actively rehearsing. It's a training artifact, n
 > 💡 **Practice tip:** …
 ```
 
-**Exemplar:** [`interviews/food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — the transcript at the very end. *(It predates the current §4.1 spec, so its final diagram lacks the numbers/patterns/failures tables. Use it as the transcript exemplar only.)*
+**Exemplar:** [`interviews/food-delivery/diagrams.md`](../interviews/food-delivery/diagrams.md) — the transcript at the very end. *(It predates the current §5.1 spec, so its final diagram lacks the numbers/patterns/failures tables. Use it as the transcript exemplar only.)*
 
 ---
 
-## 5. Mermaid conventions
+## 6. Mermaid conventions
 
 Keep diagrams renderable and consistent.
 
@@ -569,7 +732,7 @@ Tier R may also use `{{"hexagon"}}` for an event or topic.
 
 ---
 
-## 6. Accuracy rules (non-negotiable)
+## 7. Accuracy rules (non-negotiable)
 
 These govern all content.
 
@@ -589,7 +752,7 @@ When honesty and helpfulness conflict, choose honesty.
 
 ---
 
-## 7. New-topic checklist
+## 8. New-topic checklist
 
 Copy this into a scratch note when starting a topic.
 
@@ -598,6 +761,17 @@ STRUCTURE
 [ ] Named the central split in one sentence (drives Diagram 1 + simple-diagram + README + master)
 [ ] Named the PATTERNS this topic assembles (patterns/README.md reverse index) — central vs present
 [ ] Pulled real constraints (scale, latency SLA, availability, durability) into the problem statement
+
+COMPRESSION (Rule 7 — if this topic has a source doc)
+[ ] Filled the §3.3 worksheet before writing anything
+[ ] Every concept sorted explain / name / cut — the list is written down, not implied
+[ ] EXPLAIN has ≤ 8 rows; each one has its own Tier D diagram
+[ ] NAME tier is non-empty (the cheap armour for follow-ups)
+[ ] CUT is non-empty — operator knobs, version history, experimental features are gone
+[ ] COVERAGE CHECK done: every top-level section of the source appears somewhere in the folder
+[ ] Each remembered constraint is a failure story: naive design → number that breaks it → fix
+[ ] Each new concept bridges to something the reader already knows
+[ ] Any section introducing 3+ new terms has a diagram
 
 STYLE (Rule 2)
 [ ] Read every file aloud — no sentence made me stumble or run out of breath
@@ -637,9 +811,9 @@ CONTENT
 [ ] deep-dive.md: 🟢 analogy · 🟡 code+table · 🔴 capacity math or failure mode · ≥15-row cheat sheet
 
 FINISH
-[ ] Master diagram (§4.1): one screen · Tier D reduction below it · numbered flow · AWS+pattern
+[ ] Master diagram (§5.1): one screen · Tier D reduction below it · numbered flow · AWS+pattern
     annotations · red on hard parts · narration + 5 numbers + patterns + 3 failures + "one thing"
-[ ] (Optional, if rehearsing) §4.2 transcript added — timestamped R→A→D→I→O, numbers reused
+[ ] (Optional, if rehearsing) §5.2 transcript added — timestamped R→A→D→I→O, numbers reused
 [ ] Cross-links between related topics + down into patterns/ and fundamentals/
 [ ] New AWS rows pushed back to docs/AWS_SERVICE_MAP.md
 [ ] New recurring sub-problem added to the patterns/README.md gap list
@@ -649,7 +823,7 @@ FINISH
 
 ---
 
-## 8. Quality bar — self-review before calling it done
+## 9. Quality bar — self-review before calling it done
 
 Ask these out loud.
 
@@ -662,21 +836,24 @@ Ask these out loud.
 - **Is every service name preceded by the primitive it implements?** A bare service name is a name-drop (Rule 5).
 - **Does the folder route to `patterns/` instead of re-deriving ladders?** The same contention/saga reasoning in three folders belongs in a pattern file.
 - **Is every deep passage marked and collapsed?** A first-pass reader must be able to skip all of it and still pass (Rule 6).
+- **Does every subsystem in the source appear somewhere here?** Thin is fine. Missing is not (Rule 7).
+- **Could I have written this without reading the source?** If yes, you reformatted a summary. Go back to the source.
 - **Would this survive a fact-check?** No unverifiable numbers as fact, no invented citations, no unmarked AWS quotas.
 - **Do the failure-mode questions have real incident-response answers?** Not hand-waving.
 
 ---
 
-## 9. Order of operations
+## 10. Order of operations
 
+0. **If the topic has a source doc, read it and fill the compression worksheet** ([§3.3](#33-the-compression-worksheet)). Sort every concept into explain / name / cut *before* writing a word. This decides the whole folder.
 1. **Name the central split and the patterns in play.** One sentence plus the reverse-index row. Everything hangs off this.
-2. Draft `questions.md`. It defines scope and levels.
+2. Draft `questions.md`. It defines scope and levels. Its levels should track your EXPLAIN list.
 3. Write `simple-diagram.md`. It forces you to commit to the split. Fill the 4-column primitive/AWS/native cheat-sheet here first — later files reuse it.
 4. Write `answers.md`. The substance. Key takeaways crystallize each point. Link out to `patterns/`.
 5. Write `diagrams.md` diagrams 1–N. Diagram 1 = the split. All Tier D, each with draw order and spoken lines.
 6. Write `deep-dive.md`. Move any depth that leaked into steps 3–5 in here.
 7. Write `README.md` — especially "in an Interview" and "How a Senior Engineer Thinks".
-8. **Write the One-Page Master Diagram last** (§4.1). It compresses everything above, so it can only be written once the rest exists. It's also the first thing you'll read when revising.
-9. (Optional) `conducive-sentences.md` prose pass, or the §4.2 transcript if you're rehearsing this topic.
+8. **Write the One-Page Master Diagram last** (§5.1). It compresses everything above, so it can only be written once the rest exists. It's also the first thing you'll read when revising.
+9. (Optional) `conducive-sentences.md` prose pass, or the §5.2 transcript if you're rehearsing this topic.
 10. Update `ROADMAP.md` and cross-links. Push new AWS rows to `AWS_SERVICE_MAP.md` and new sub-problems to the `patterns/` gap list. Accuracy pass. Preview all Mermaid.
 11. **Read-aloud pass.** Last thing, always. Fix every sentence that made you stumble.

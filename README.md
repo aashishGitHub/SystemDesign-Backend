@@ -76,7 +76,8 @@ Every topic's `diagrams.md` ends with a **🎯 one-page master diagram**: the wh
 |---|---|
 | **The central split in one sentence** | The organizing insight — say this before you draw anything |
 | **The master Mermaid diagram** | Numbered ①–⑧ boxes, AWS service + pattern on each, red on the hard parts |
-| **The 60-second narration** | One spoken line per numbered box — what you say while your hand draws it |
+| **The 60-second narration** | One ≤15-word line per numbered box — the whole system, said end to end |
+| **The 3-minute walkthrough** | The same boxes with the reasoning attached — what you say while your hand draws it |
 | **The five numbers that justify the design** | With derivations, so you can defend the shape instead of asserting it |
 | **The patterns this assembles** | Links into [`patterns/`](./patterns/README.md) rather than re-deriving the ladder |
 | **The three things that break** | Blast radius · mitigation · how you detect it |
