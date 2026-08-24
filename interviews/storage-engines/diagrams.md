@@ -68,7 +68,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Open with physics, not a product name. Sequential I/O is far cheaper.
+2. The RUM conjecture: optimize Reads, Updates, or Memory. Improving two costs the third.
+3. B-tree: sorted pages, high fanout, one bounded descent, natural range scans.
+4. LSM: append to a WAL, insert into a sorted memtable, and ack.
+5. Compaction is the tradeoff, not an implementation detail.
+6. `fsync` is the boundary between "in memory" and "on stable storage".
+7. A delete is a write. Tombstones must be retained for a grace period.
+8. Close on the sharp edges: if compaction falls behind, writes throttle or block.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Open with physics, not a product name.** Disk — even SSD — is orders of magnitude slower than RAM, and *sequential* I/O is far cheaper than *random*. Every storage engine is a strategy for converting the workload's access pattern into as much sequential I/O as possible while keeping enough index in memory to find things fast. That framing makes B-tree-vs-LSM a consequence of the workload rather than a preference.
 2. **The first red box names the fundamental tension: the RUM conjecture** (Athanassoulis et al., 2016). You can optimize for **R**eads, **U**pdates, or **M**emory/space — improving two typically worsens the third. Every knob below (Bloom filters, compaction strategy, block cache) is a lever on one of those three axes, which is why there is no universally best engine.

@@ -61,7 +61,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Start with the failure: `hash(key) % N` remaps most keys when N changes.
+2. The ring: hash keys and nodes into one space, then walk clockwise.
+3. Virtual nodes are a correctness requirement, not a tuning knob.
+4. Replication: the preference list is the next N distinct physical nodes.
+5. `W + R > N` forces the read and write sets to overlap.
+6. A sloppy quorum writes to a substitute and hands it a hint.
+7. Read repair fixes only what's read; Merkle anti-entropy covers everything.
+8. The honest limit: consistent hashing does not fix a hot key.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Start with the failure, not the solution.** `hash(key) % N` looks fine until N changes: then roughly (N−1)/N of all keys map somewhere new. For a cache that means a near-total miss storm and a **thundering herd** onto the database behind it. Leading with this is what makes the rest obviously necessary rather than clever.
 2. **The ring: hash keys *and* nodes into the same space and walk clockwise.** Now adding or removing one node only disturbs the arc between it and its predecessor — about **1/N** of keys, and nobody else's mapping changes.

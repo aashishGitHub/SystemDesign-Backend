@@ -397,6 +397,33 @@ def two_phase_commit(participants, txn):
         return "ABORTED"
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same protocol</summary>
+
+```java
+// Coordinator state sketch
+String twoPhaseCommit(List<Participant> participants, Txn txn) {
+    List<Vote> votes = participants.stream()
+            .map(p -> p.prepare(txn))                  // phase 1
+            .toList();
+
+    if (votes.stream().allMatch(v -> v == Vote.YES)) {
+        log.durable("COMMIT", txn);                    // decision BEFORE telling anyone
+        participants.forEach(p -> p.commit(txn));      // phase 2
+        return "COMMITTED";
+    }
+
+    log.durable("ABORT", txn);
+    participants.forEach(p -> p.abort(txn));
+    return "ABORTED";
+}
+// Locks are held across BOTH phases. A coordinator crash between them
+// leaves every participant blocked — this is why 2PC is avoided.
+```
+
+</details>
+
+
 | Event | Who logs what | Locks |
 |---|---|---|
 | Participant votes YES | Participant logs PREPARE | Acquired, held |
@@ -509,6 +536,42 @@ def place_order_saga(order):
             compensate(step, ref)               # refund / release / cancel — idempotent
         raise
 ```
+
+<details>
+<summary>☕ <b>Java</b> — an ArrayDeque gives you reverse order for free</summary>
+
+```java
+// Orchestration-style saga with compensations
+record Step(String name, String ref) {}
+
+String placeOrderSaga(Order order) {
+    Deque<Step> completed = new ArrayDeque<>();
+    try {
+        String chargeId = payment.charge(order);
+        completed.push(new Step("payment", chargeId));
+
+        String resvId = inventory.reserve(order);
+        completed.push(new Step("inventory", resvId));
+
+        String orderId = orders.create(order);
+        completed.push(new Step("orders", orderId));
+
+        notify.send(order);        // after the pivot: retriable, never compensated
+        return orderId;
+
+    } catch (Exception e) {
+        // Deque pops in reverse order — compensate backwards.
+        while (!completed.isEmpty()) {
+            Step s = completed.pop();
+            compensate(s);         // refund / release / cancel — must be idempotent
+        }
+        throw e;
+    }
+}
+```
+
+</details>
+
 
 | | Orchestration | Choreography |
 |---|---|---|

@@ -516,7 +516,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The firehose comes first: 1M drivers ÷ 4 s = 250K writes/s.
+2. The index is a cell index, not a coordinate scan.
+3. A rider request is a cell lookup plus its 8 neighbours. Not optional.
+4. Then I score, I don't sort. Nearest is not best.
+5. The correctness core: serial offers with a real timer, and accept is compare-and-set.
+6. The trip is the durable plane. `COMPLETED` is deliberately not `PAID`.
+7. Tracking is a push channel scoped per ride. Hop 2 is the hard part.
+8. Surge is a batch job on the same cell grid, with smoothing and hysteresis.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The firehose comes first, because it sets the whole shape.** 1M drivers × one ping per 4 s = **250K writes/s**. That never touches the trip database — it lands on a partitioned stream, sharded by city, because rides are intra-region.
 2. **The index is a cell index, not a coordinate scan.** Geohash, S2 or Uber's H3, in an in-memory store with a TTL, so a driver who stops reporting simply ages out — offline after ~30 s of silence. The data is *ephemeral by design*: a lost ping is replaced 4 seconds later, so there is nothing to recover.

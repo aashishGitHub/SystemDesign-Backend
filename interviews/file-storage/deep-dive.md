@@ -87,6 +87,48 @@ def upload_file(file_path: str, api_client):
     )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — readNBytes handles short reads the Python read() hides</summary>
+
+```java
+record Chunk(String hash, byte[] data, int index) {}
+
+List<Chunk> chunkFile(Path path, int chunkSize) throws Exception {
+    List<Chunk> chunks = new ArrayList<>();
+    MessageDigest sha = MessageDigest.getInstance("SHA-256");
+
+    try (InputStream in = Files.newInputStream(path)) {
+        byte[] buf = new byte[chunkSize];
+        int read, index = 0;
+        while ((read = in.readNBytes(buf, 0, chunkSize)) > 0) {
+            byte[] data = Arrays.copyOf(buf, read);
+            chunks.add(new Chunk(HexFormat.of().formatHex(sha.digest(data)), data, index++));
+        }
+    }
+    return chunks;
+}
+
+void uploadFile(Path path, ApiClient api) throws Exception {
+    List<Chunk> chunks = chunkFile(path, 4 * 1024 * 1024);
+
+    // 1. Ask the server which chunks it already has — this IS the dedup win.
+    Set<String> existing = api.checkChunks(chunks.stream().map(Chunk::hash).toList());
+
+    // 2. Upload only what's new
+    for (Chunk c : chunks) {
+        if (!existing.contains(c.hash())) api.uploadChunk(c.hash(), c.data());
+    }
+
+    // 3. A file IS its manifest of chunk hashes
+    api.createFile(path.getFileName().toString(),
+                   Files.size(path),
+                   chunks.stream().map(Chunk::hash).toList());
+}
+```
+
+</details>
+
+
 **Download flow**:
 
 ```python
@@ -114,6 +156,40 @@ def download_file(file_id: str, local_path: str, api_client):
     if compute_full_hash(local_path) != file_meta.content_hash:
         raise CorruptionError()
 ```
+
+<details>
+<summary>☕ <b>Java</b> — ordered futures — no index map needed</summary>
+
+```java
+void downloadFile(String fileId, Path localPath, ApiClient api) throws Exception {
+    FileMetadata meta = api.getFile(fileId);
+    List<String> manifest = meta.chunkManifest();
+
+    // 2. Download chunks in parallel, but keep the index so we can reassemble.
+    try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
+        List<CompletableFuture<byte[]>> futures = manifest.stream()
+                .map(hash -> CompletableFuture.supplyAsync(
+                        () -> api.downloadChunk(hash), pool))
+                .toList();
+
+        // 3. Reassemble IN ORDER — the futures list preserves manifest order.
+        try (OutputStream out = Files.newOutputStream(localPath)) {
+            for (CompletableFuture<byte[]> f : futures) {
+                out.write(f.join());
+            }
+        }
+    }
+
+    // 4. Verify integrity
+    if (!computeFullHash(localPath).equals(meta.contentHash())) {
+        throw new CorruptionError(fileId);
+    }
+}
+// Iterating the ordered futures removes the index bookkeeping entirely.
+```
+
+</details>
+
 
 **Comparison: Fixed vs Content-Defined Chunking**
 
@@ -258,6 +334,37 @@ async def get_delta(
     }
 ```
 
+<details>
+<summary>☕ <b>Java</b> — cursor names a position, never an offset</summary>
+
+```java
+@GetMapping("/sync/delta")
+DeltaResponse getDelta(@RequestParam String workspaceId,
+                       @RequestParam(required = false) String cursor,
+                       @RequestParam(defaultValue = "200") int limit) {
+
+    List<SyncEvent> events = (cursor == null)
+            ? getAllCurrentFiles(workspaceId)              // Initial sync
+            : jdbc.query("""
+                    SELECT * FROM sync_events
+                    WHERE workspace_id = ? AND event_id > ?
+                    ORDER BY event_id ASC
+                    LIMIT ?
+                    """, eventMapper, workspaceId, decodeCursor(cursor), limit);
+
+    String nextCursor = events.isEmpty()
+            ? cursor
+            : encodeCursor(events.get(events.size() - 1).eventId());
+
+    return new DeltaResponse(events.stream().map(this::format).toList(),
+                             nextCursor,
+                             events.size() == limit);
+}
+```
+
+</details>
+
+
 **Client-side sync state machine**:
 
 ```python
@@ -299,6 +406,45 @@ class SyncStateMachine:
         elif change.type == "move":
             os.rename(change.previous_path, change.path)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — enum state + why the ordering matters</summary>
+
+```java
+/** States: IDLE → FETCHING_REMOTE → APPLYING → PUSHING_LOCAL → IDLE */
+class SyncStateMachine {
+    enum State { IDLE, FETCHING_REMOTE, APPLYING, PUSHING_LOCAL }
+
+    private volatile State state = State.IDLE;
+    private String cursor;
+
+    void syncCycle() {
+        state = State.FETCHING_REMOTE;
+        DeltaResponse remote = api.getDelta(cursor);
+
+        state = State.APPLYING;
+        for (Change change : remote.entries()) applyRemoteChange(change);
+        cursor = remote.cursor();                  // advance ONLY after applying
+
+        List<Change> local = detectLocalChanges();
+
+        state = State.PUSHING_LOCAL;
+        for (Change change : local) {
+            try {
+                pushChange(change);
+            } catch (ConflictException e) {
+                handleConflict(change, e.serverVersion());   // never lose local work
+            }
+        }
+        state = State.IDLE;
+    }
+}
+// Remote-then-local ordering matters: applying remote first means a local
+// push either succeeds cleanly or conflicts against current server state.
+```
+
+</details>
+
 
 ---
 
@@ -342,6 +488,41 @@ class InitialSyncManager:
         # Mark initial sync complete
         await self.set_sync_state("incremental")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same checkpointed loop</summary>
+
+```java
+class InitialSyncManager {
+
+    void performInitialSync(String workspaceId) throws InterruptedException {
+        String cursor = null;
+        long totalFiles = 0;
+
+        while (true) {
+            DeltaResponse batch = api.getDelta(workspaceId, cursor, 1000);
+
+            // Process a batch at a time — never hold the whole workspace in heap.
+            for (Entry entry : batch.entries()) {
+                db.upsertLocalMetadata(entry);
+                totalFiles++;
+            }
+
+            // Checkpoint so an interrupted first sync resumes, not restarts.
+            saveSyncProgress(batch.cursor(), totalFiles);
+
+            if (!batch.hasMore()) break;
+            cursor = batch.cursor();
+
+            Thread.sleep(100);                    // rate-limit ourselves
+        }
+        setSyncState(SyncState.INCREMENTAL);
+    }
+}
+```
+
+</details>
+
 
 **Event ordering guarantees**:
 
@@ -413,6 +594,33 @@ def detect_conflict(local: FileVersion, remote: FileVersion, pushed: FileVersion
     return False
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the == vs .equals trap is real here</summary>
+
+```java
+record FileVersion(int versionNumber, String contentHash, Instant modifiedAt) {}
+
+/**
+ * local  — what the client has
+ * remote — what the server has now
+ * pushed — the base version the client thinks it is editing
+ *
+ * A conflict is: both sides moved away from the same base.
+ */
+boolean detectConflict(FileVersion local, FileVersion remote, FileVersion pushed) {
+    if (pushed.versionNumber() < remote.versionNumber()) {
+        // Server moved on. Did we move too?
+        return !local.contentHash().equals(remote.contentHash());
+    }
+    return false;
+}
+// .equals, not == — comparing hash Strings by reference would report
+// "no conflict" for every genuine conflict.
+```
+
+</details>
+
+
 **Resolution flow**:
 
 ```python
@@ -437,6 +645,37 @@ class ConflictResolver:
             f"Your changes were saved as {conflict_name}."
         )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — ATOMIC_MOVE, and why</summary>
+
+```java
+class ConflictResolver {
+
+    void resolve(Path localFile, FileMetadata remoteFile) throws IOException {
+        // 1. Name the conflicted copy so the user knows whose it was.
+        String base = stripExtension(localFile.getFileName().toString());
+        String ext  = extension(localFile.getFileName().toString());
+        String conflictName = "%s (Conflicted copy from %s on %s)%s"
+                .formatted(base, deviceName, LocalDate.now(), ext);
+
+        Path conflictPath = localFile.resolveSibling(conflictName);
+
+        // 2-4. Keep local work, take the server version, then upload the copy.
+        Files.move(localFile, conflictPath, StandardCopyOption.ATOMIC_MOVE);
+        download(remoteFile.fileId(), localFile);
+        uploadFile(conflictPath);
+
+        notifyUser("Conflict detected in %s. Your changes were saved as %s."
+                .formatted(localFile.getFileName(), conflictName));
+    }
+}
+// ATOMIC_MOVE matters: a half-moved file during a crash would lose the
+// user's only copy of their changes.
+```
+
+</details>
+
 
 **Comparison: Resolution Strategies**
 
@@ -502,6 +741,31 @@ async def create_file(name: str, folder_id: str) -> FileMetadata:
     await db.insert(file)
     return file
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the race the Python version also has</summary>
+
+```java
+// Two users create "New Document.txt" in the same folder at once.
+// Fix: the server owns a canonical file_id; the path is just metadata.
+FileMetadata createFile(String name, String folderId) {
+    UUID fileId = UUID.randomUUID();               // Globally unique, permanent
+
+    // Auto-rename on collision: "New Document (1).txt"
+    if (db.getFileByPath(folderId, name) != null) {
+        name = generateUniqueName(name, folderId);
+    }
+
+    FileMetadata file = new FileMetadata(fileId, name, folderId);
+    db.insert(file);
+    return file;
+}
+// The check-then-insert is still racy under true concurrency. The durable
+// fix is a UNIQUE(folder_id, name) constraint and a retry on violation.
+```
+
+</details>
+
 
 ---
 
@@ -608,6 +872,42 @@ async def move_file(file_id: UUID, new_parent_id: UUID, new_name: str):
                  new_parent.depth - file.depth,
                  file.workspace_id, f"{old_path_prefix}/%")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — @Transactional is load-bearing here</summary>
+
+```java
+@Transactional
+void moveFile(UUID fileId, UUID newParentId, String newName) {
+    FileMetadata file      = db.get(fileId);
+    FileMetadata newParent = db.get(newParentId);
+
+    String newPath = newParent.fullPath() + "/" + newName;
+
+    jdbc.update("""
+            UPDATE file_metadata
+            SET parent_folder_id = ?, name = ?, full_path = ?, depth = ?
+            WHERE file_id = ?
+            """, newParentId, newName, newPath, newParent.depth() + 1, fileId);
+
+    // Moving a folder rewrites every descendant's materialized path.
+    if (file.isFolder()) {
+        jdbc.update("""
+                UPDATE file_metadata
+                SET full_path = REPLACE(full_path, ?, ?),
+                    depth     = depth + ?
+                WHERE workspace_id = ? AND full_path LIKE ?
+                """, file.fullPath(), newPath,
+                     newParent.depth() - file.depth(),
+                     file.workspaceId(), file.fullPath() + "/%");
+    }
+}
+// One transaction, or a crash mid-move leaves orphaned subtrees.
+// This is the cost of materialized paths: fast reads, expensive moves.
+```
+
+</details>
+
 
 ---
 
@@ -729,6 +1029,45 @@ class ChunkStore:
         return chunk_hash
 ```
 
+<details>
+<summary>☕ <b>Java</b> — UPSERT closes the race the SELECT-then-INSERT leaves open</summary>
+
+```java
+class ChunkStore {
+
+    String storeChunk(byte[] chunkData) throws Exception {
+        String chunkHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(chunkData));
+
+        // UPDATE first: if it returns 1, the chunk existed and we just took
+        // a reference. No check-then-act window.
+        int updated = jdbc.update(
+                "UPDATE chunks SET ref_count = ref_count + 1 WHERE chunk_hash = ?",
+                chunkHash);
+
+        if (updated > 0) return chunkHash;          // Deduplicated!
+
+        // New chunk — upload, then record.
+        s3.putObject(PutObjectRequest.builder()
+                        .bucket(CHUNK_BUCKET)
+                        .key(chunkHash)
+                        .contentType("application/octet-stream")
+                        .build(),
+                RequestBody.fromBytes(chunkData));
+
+        jdbc.update("""
+                INSERT INTO chunks (chunk_hash, size_bytes, ref_count) VALUES (?, ?, 1)
+                ON CONFLICT (chunk_hash) DO UPDATE SET ref_count = chunks.ref_count + 1
+                """, chunkHash, chunkData.length);
+
+        return chunkHash;
+    }
+}
+```
+
+</details>
+
+
 **Measuring dedup efficiency**:
 
 ```sql
@@ -789,6 +1128,47 @@ class CDCChunker:
         
         return chunks
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same rolling-hash boundary detection</summary>
+
+```java
+class CDCChunker {
+    static final int MIN_CHUNK   = 2 * 1024 * 1024;   // 2 MB
+    static final int MAX_CHUNK   = 8 * 1024 * 1024;   // 8 MB
+    static final int AVG_CHUNK   = 4 * 1024 * 1024;   // Target 4 MB
+    static final int WINDOW_SIZE = 48;
+
+    List<byte[]> chunk(byte[] data) {
+        List<byte[]> chunks = new ArrayList<>();
+        int start = 0;
+        RabinFingerprint fp = new RabinFingerprint(WINDOW_SIZE);
+
+        for (int pos = MIN_CHUNK; pos < data.length; pos++) {
+            fp.update(data, pos - WINDOW_SIZE, pos);       // rolling hash
+            int len = pos - start;
+
+            if (len >= MIN_CHUNK && fp.digest() % AVG_CHUNK == 0) {
+                chunks.add(Arrays.copyOfRange(data, start, pos));   // natural boundary
+                start = pos;
+            } else if (len >= MAX_CHUNK) {
+                chunks.add(Arrays.copyOfRange(data, start, pos));   // forced boundary
+                start = pos;
+            }
+        }
+
+        if (start < data.length) {
+            chunks.add(Arrays.copyOfRange(data, start, data.length));   // final chunk
+        }
+        return chunks;
+    }
+}
+// The whole point: boundaries follow CONTENT, so inserting a byte at the
+// front reshapes one chunk instead of every chunk after it.
+```
+
+</details>
+
 
 **Why CDC matters**:
 
@@ -887,6 +1267,48 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str = Depends(get_us
     await hub.connect(user_id, websocket)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Spring WebSocket + concurrent collections</summary>
+
+```java
+@Component
+class NotificationHub extends TextWebSocketHandler {
+    private final Map<String, List<WebSocketSession>> connections = new ConcurrentHashMap<>();
+    private final ExecutorService subscribers = Executors.newCachedThreadPool();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) {
+        String userId = userIdOf(session);
+        connections.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>()).add(session);
+
+        subscribers.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                jedis.subscribe(new JedisPubSub() {
+                    @Override public void onMessage(String channel, String message) {
+                        sendQuietly(session, message);
+                    }
+                }, "user:" + userId + ":notifications");
+            }
+        });
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        List<WebSocketSession> list = connections.get(userIdOf(session));
+        if (list != null) list.remove(session);
+    }
+
+    void notifyFileChange(String workspaceId, Change change) {
+        String payload = json.writeValueAsString(change);
+        getWorkspaceMembers(workspaceId)
+                .forEach(u -> jedis.publish("user:" + u + ":notifications", payload));
+    }
+}
+```
+
+</details>
+
+
 **When to trigger notifications**:
 
 ```python
@@ -906,6 +1328,29 @@ async def create_file(file: FileMetadata, user_id: str):
         }
     )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the dual-write caveat the Python version leaves silent</summary>
+
+```java
+// After any file operation, publish the event.
+@Transactional
+void createFile(FileMetadata file, String userId) {
+    db.insert(file);
+
+    // Note: this publish is OUTSIDE the transaction's guarantees. If it
+    // must not be lost, it belongs in an outbox row instead.
+    notificationHub.notifyFileChange(file.workspaceId(), new Change(
+            "create",
+            file.fileId().toString(),
+            file.fullPath(),
+            file.sizeBytes(),
+            userId));
+}
+```
+
+</details>
+
 
 ---
 
@@ -974,6 +1419,39 @@ class NotificationService:
         if event["priority"] == "high":
             await apns.send(user_id, f"New file: {event['file_name']}")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — typed catch instead of a bare except</summary>
+
+```java
+class NotificationService {
+
+    void notify(List<String> userIds, Event event) {
+        for (String userId : userIds) {
+            if (!activeConnections.containsKey(userId)) {
+                continue;      // Offline — they'll catch up on next sync
+            }
+            try {
+                sendWs(userId, event);              // Real-time first
+            } catch (IOException e) {
+                sendPush(userId, event);            // Fall back to push
+            }
+        }
+    }
+
+    void sendPush(String userId, Event event) {
+        // Only high-priority events are worth a push notification.
+        if (event.priority() == Priority.HIGH) {
+            apns.send(userId, "New file: " + event.fileName());
+        }
+    }
+}
+// The Python version catches bare `except:` here, which would also swallow
+// KeyboardInterrupt. Catching IOException says what you actually mean.
+```
+
+</details>
+
 
 ---
 

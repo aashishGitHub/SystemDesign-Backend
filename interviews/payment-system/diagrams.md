@@ -615,6 +615,20 @@ flowchart LR
 
 ### The 60-second narration
 
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The card never touches my servers. The PSP's iframe tokenizes it.
+2. Persist the intent before calling anyone. The idempotency key is `UNIQUE`.
+3. Authorize, then capture — a hold, then the commitment.
+4. Webhooks are a latency optimization, not truth. Verify the HMAC first.
+5. Every movement is a balanced DR/CR pair in an append-only ledger.
+6. The settlement file arrives days later. That's the second meaning of "final".
+7. Reconcile three ways daily. This is load-bearing, not back-office cleanup.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
+
 *(one line per numbered edge)*
 
 1. **The card never touches my servers.** The PSP's cross-origin iframe tokenizes it — that's what keeps me out of PCI scope (and why session-replay tools must be blocked from that frame). The client sends me **one idempotency key per checkout attempt**, reused across every retry of that attempt.

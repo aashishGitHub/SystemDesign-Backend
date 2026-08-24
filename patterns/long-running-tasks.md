@@ -180,6 +180,38 @@ while True:
         msg.ack()                             # don't retry what can't succeed
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same worker loop</summary>
+
+```java
+while (true) {
+    Message msg = queue.receive(Duration.ofSeconds(20));   // long poll, not a busy loop
+    if (msg == null) continue;
+
+    Job job = db.load(msg.jobId());
+
+    if (TERMINAL.contains(job.status())) { msg.ack(); continue; }  // duplicate delivery
+    if (job.cancelRequested())           { msg.ack(); continue; }
+
+    db.update(job, Status.RUNNING, job.attempts() + 1);
+    try (Heartbeat hb = heartbeat(msg)) {                  // ← extend the lease while working
+        Result result = process(job);
+        db.update(job, Status.SUCCEEDED, result.key());
+        msg.ack();                                         // ACK LAST. Always.
+    } catch (RetryableException e) {
+        db.recordError(job, e.getMessage());
+        msg.nack(backoff(job.attempts()));                 // redelivered later
+    } catch (FatalException e) {
+        db.update(job, Status.FAILED, e.getMessage());
+        msg.ack();                                         // don't retry what can't succeed
+    }
+}
+// try-with-resources is doing real work here: the Heartbeat closes
+// deterministically on every exit path, mirroring Python's `with`.
+```
+
+</details>
+
 **Ack after success, never before.** Acking on receipt converts at-least-once into at-most-once and silently loses jobs when a worker dies mid-processing.
 
 **The visibility timeout is the trap.** When a worker receives a message, the queue hides it for a fixed window; if no ack arrives in time, it's redelivered on the assumption the worker died. So:

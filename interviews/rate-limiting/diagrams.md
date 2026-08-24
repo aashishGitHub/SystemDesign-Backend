@@ -65,7 +65,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Layer the defence so the cheapest rejection happens first.
+2. Policy is not enforcement. Quota config is slow-changing; enforcement is hot-path.
+3. Pick the algorithm from the behaviour you need. Token bucket is the default.
+4. The correctness core: the check-and-decrement must be atomic.
+5. A single hot key is the scaling wall. Shard the key.
+6. What happens when the limiter itself is down? A per-route decision.
+7. A `429` without headers is a broken contract.
+8. Alert on tenants approaching their limit, not only on rejections.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Layer the defence so the cheapest rejection happens first.** Volumetric floods die at the edge (WAF/CDN rules), per-key quotas are enforced at the gateway, and services keep a *concurrency* limit — which is a different thing from a rate limit: it protects in-flight capacity rather than arrival rate.
 2. **Policy is not enforcement.** Who gets what quota (free vs paid tier, endpoint weight, burst multiplier) is slow-changing config that must hot-reload without restarting gateways. Enforcement is a hot-path decision engine. Conflating them means a pricing change becomes a deploy.

@@ -47,6 +47,28 @@ def get_user(user_id: str) -> User:
     return user
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+User getUser(String userId) {
+    // Try cache first
+    String cached = cache.get("user:" + userId);
+    if (cached != null) {                      // HIT
+        return deserialize(cached, User.class);
+    }
+
+    // MISS - fetch from database
+    User user = db.queryOne("SELECT * FROM users WHERE id = ?", userId);
+
+    // Populate cache for next time
+    cache.set("user:" + userId, serialize(user), Duration.ofSeconds(300));
+    return user;
+}
+```
+
+</details>
+
 ---
 
 ### A3. Average latency calculation
@@ -113,6 +135,30 @@ def update_product(product_id: str, data: dict):
     cache.delete(f"product:{product_id}")  # Invalidate
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Cache-aside read
+Product getProduct(String productId) {
+    String key = "product:" + productId;
+    Product cached = cache.get(key, Product.class);
+    if (cached != null) return cached;
+
+    Product product = db.getProduct(productId);
+    cache.set(key, product, Duration.ofSeconds(3600));
+    return product;
+}
+
+// Cache-aside write (delete strategy)
+void updateProduct(String productId, ProductData data) {
+    db.updateProduct(productId, data);
+    cache.delete("product:" + productId);      // Invalidate
+}
+```
+
+</details>
+
 **Pros**: Simple, cache only contains requested data.
 **Cons**: First request always slow (miss), potential stale data.
 
@@ -137,6 +183,23 @@ def update_product(product_id: str, data: dict):
     
     return product
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+Product updateProduct(String productId, ProductData data) {
+    Product product = Product.from(data);
+
+    // Write to both synchronously
+    cache.set("product:" + productId, product);
+    db.updateProduct(productId, data);
+
+    return product;
+}
+```
+
+</details>
 
 | Cache-Aside | Write-Through |
 |---|---|
@@ -178,6 +241,35 @@ class WriteBackCache:
             await self.db.write(key, value)
         self.dirty_keys.clear()
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note the concurrency the Python version leaves implicit</summary>
+
+```java
+class WriteBackCache {
+    private final Cache cache;
+    private final Database db;
+    // Concurrent: the flush job and request threads touch this together.
+    private final Set<String> dirtyKeys = ConcurrentHashMap.newKeySet();
+
+    void write(String key, Object value) {
+        cache.set(key, value);
+        dirtyKeys.add(key);
+    }
+
+    // Background job — schedule with a ScheduledExecutorService
+    void flushToDb() {
+        // Drain a snapshot so writes arriving mid-flush aren't silently dropped.
+        List<String> batch = new ArrayList<>(dirtyKeys);
+        for (String key : batch) {
+            db.write(key, cache.get(key));
+            dirtyKeys.remove(key);
+        }
+    }
+}
+```
+
+</details>
 
 **Use write-back when**: write throughput matters more than durability (gaming scores, analytics).
 
@@ -243,6 +335,20 @@ def update_session(session_id: str, data: dict):
     redis.expire(f"session:{session_id}", 3600)  # 1 hour TTL
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void updateSession(String sessionId, Map<String, String> data) {
+    // Redis is the source of truth for sessions
+    String key = "session:" + sessionId;
+    jedis.hset(key, data);
+    jedis.expire(key, 3600);                   // 1 hour TTL
+}
+```
+
+</details>
+
 ---
 
 ## Level 3 — Eviction Policies
@@ -288,6 +394,35 @@ class LRUCache:
         if len(self.cache) > self.capacity:
             self.cache.popitem(last=False)  # Evict least recent
 ```
+
+<details>
+<summary>☕ <b>Java</b> — LinkedHashMap does this natively — worth knowing</summary>
+
+```java
+// Java has this built in: LinkedHashMap with access-order + removeEldestEntry.
+class LRUCache<K, V> extends LinkedHashMap<K, V> {
+    private final int capacity;
+
+    LRUCache(int capacity) {
+        // initialCapacity, loadFactor, accessOrder=true -> get() reorders
+        super(16, 0.75f, true);
+        this.capacity = capacity;
+    }
+
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > capacity;              // evict least recently used
+    }
+}
+
+// Usage — get() and put() are inherited; the eviction is automatic.
+LRUCache<String, Object> cache = new LRUCache<>(1000);
+
+// Thread-safe variant: Collections.synchronizedMap(new LRUCache<>(1000)),
+// or use Caffeine, which does LRU/LFU properly under concurrency.
+```
+
+</details>
 
 ---
 
@@ -519,6 +654,28 @@ def update_product(product_id, data):
     cache.set(f"product:{product_id}", data)  # Atomic intent
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same three strategies</summary>
+
+```java
+// TTL-based (simplest)
+cache.set(key, value, Duration.ofSeconds(300));   // Stale up to 5 min
+
+// Event-driven
+void updateProduct(String productId, ProductData data) {
+    db.update(productId, data);
+    pubsub.publish("cache_invalidate", "product:" + productId);
+}
+
+// Write-through
+void updateProduct(String productId, ProductData data) {
+    db.update(productId, data);
+    cache.set("product:" + productId, data);      // Atomic intent
+}
+```
+
+</details>
+
 ---
 
 ### A25. User sees old profile after update
@@ -544,6 +701,27 @@ def get_profile(user_id):
         return db.get_user(user_id)  # Bypass cache
     return cache_aside_get(user_id)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void updateProfile(String userId, UserData data) {
+    db.updateUser(userId, data);
+    cache.delete("user:" + userId);            // Invalidate BEFORE returning
+    session.setLastWriteAt(Instant.now());     // Track for read-your-own-writes
+}
+
+User getProfile(String userId) {
+    Instant cutoff = Instant.now().minusSeconds(5);
+    if (session.lastWriteAt().isAfter(cutoff)) {   // Recent write
+        return db.getUser(userId);                 // Bypass cache
+    }
+    return cacheAsideGet(userId);
+}
+```
+
+</details>
 
 ---
 
@@ -583,6 +761,23 @@ def update_product(product_id, data):
     time.sleep(0.5)  # Wait for in-flight reads to complete
     cache.delete(f"product:{product_id}")  # Second delete
 ```
+
+<details>
+<summary>☕ <b>Java</b> — schedule the second delete rather than sleeping the caller</summary>
+
+```java
+void updateProduct(String productId, ProductData data) {
+    String key = "product:" + productId;
+    cache.delete(key);                         // First delete
+    db.updateProduct(productId, data);
+
+    // Second delete, after in-flight reads drain. Don't block the request
+    // thread on this — schedule it.
+    scheduler.schedule(() -> cache.delete(key), 500, TimeUnit.MILLISECONDS);
+}
+```
+
+</details>
 
 **Why**: Handles the race where a read starts before the write and repopulates cache with stale data after the write completes.
 
@@ -642,6 +837,38 @@ def get_with_mutex(key: str):
         return get_with_mutex(key)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same single-flight, with the NX+EX made explicit</summary>
+
+```java
+// Single-flight: one caller refills, the rest wait.
+Object getWithMutex(String key) {
+    Object value = cache.get(key);
+    if (value != null) return value;
+
+    String lockKey = "lock:" + key;
+    // SET key val NX EX 5 — atomic acquire with an expiry so a crashed
+    // holder cannot deadlock the key forever.
+    String acquired = jedis.set(lockKey, "1", SetParams.setParams().nx().ex(5));
+
+    if ("OK".equals(acquired)) {
+        try {
+            value = db.fetch(key);
+            jedis.setex(key, 300, serialize(value));
+            return value;
+        } finally {
+            jedis.del(lockKey);                // always release
+        }
+    }
+
+    // Someone else is refilling. Back off and retry.
+    Thread.sleep(50);
+    return getWithMutex(key);
+}
+```
+
+</details>
+
 ---
 
 ### A30. Cache penetration
@@ -683,6 +910,30 @@ def get_user(user_id: str):
     return user
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Cache null values — negative caching
+User getUser(String userId) {
+    String key = "user:" + userId;
+    String cached = cache.getRaw(key);
+
+    if (NULL_MARKER.equals(cached)) return null;    // Known non-existent
+    if (cached != null) return deserialize(cached, User.class);
+
+    User user = db.getUser(userId);
+    if (user != null) {
+        cache.set(key, serialize(user), Duration.ofSeconds(300));
+    } else {
+        cache.set(key, NULL_MARKER, Duration.ofSeconds(60));   // Short TTL
+    }
+    return user;
+}
+```
+
+</details>
+
 ---
 
 ### A32. Cache avalanche
@@ -700,6 +951,18 @@ base_ttl = 3600  # 1 hour
 jitter = random.randint(0, 300)  # +/- 5 minutes
 cache.setex(key, base_ttl + jitter, value)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Add jitter to TTL
+int baseTtl = 3600;                                        // 1 hour
+int jitter  = ThreadLocalRandom.current().nextInt(0, 301);  // +/- 5 minutes
+cache.set(key, value, Duration.ofSeconds(baseTtl + jitter));
+```
+
+</details>
 
 Also: staggered cache warming, rate-limited database queries.
 
@@ -732,6 +995,27 @@ def get_hot_product(product_id: str):
     
     return value
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Hot key with no expiration + background refresh
+Object getHotProduct(String productId) {
+    String key = "hot:product:" + productId;
+    Object value = cache.get(key);
+
+    // Background refresh if getting old
+    long ttl = jedis.ttl(key);
+    if (ttl < 60) {                            // Less than 1 minute left
+        backgroundRefresh.schedule(key);
+    }
+
+    return value;
+}
+```
+
+</details>
 
 ---
 
@@ -823,6 +1107,28 @@ def on_l1_invalidate(key: str):
     local_cache.delete(key)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same order: L2 first, then broadcast L1</summary>
+
+```java
+void updateProduct(String productId, ProductData data) {
+    db.update(productId, data);
+
+    // 1. Invalidate L2 (Redis) - shared across all nodes
+    jedis.del("product:" + productId);
+
+    // 2. Broadcast L1 invalidation to all nodes
+    pubsub.publish("l1_invalidate", "product:" + productId);
+}
+
+// Each node subscribes to L1 invalidation
+void onL1Invalidate(String key) {
+    localCache.invalidate(key);
+}
+```
+
+</details>
+
 **Why this order**: If you invalidate L1 first, a node might repopulate L1 from stale L2.
 
 ---
@@ -852,6 +1158,32 @@ class CacheInvalidator:
             key = message['data']
             local_cache.delete(key)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Pub/sub invalidation
+class CacheInvalidator {
+    private final ExecutorService listener = Executors.newSingleThreadExecutor();
+
+    CacheInvalidator(JedisPool pool, Cache localCache) {
+        listener.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                // subscribe() blocks — that is why it gets its own thread.
+                jedis.subscribe(new JedisPubSub() {
+                    @Override
+                    public void onMessage(String channel, String message) {
+                        localCache.invalidate(message);
+                    }
+                }, "l1_invalidate");
+            }
+        });
+    }
+}
+```
+
+</details>
 
 ---
 
@@ -939,6 +1271,28 @@ async def warm_cache():
         await asyncio.sleep(0.001)  # Rate limit to avoid DB spike
 ```
 
+<details>
+<summary>☕ <b>Java</b> — text blocks make the embedded SQL readable</summary>
+
+```java
+// Cache warming — rate-limited so it doesn't spike the DB
+void warmCache() throws InterruptedException {
+    // Get top 10K most accessed products
+    List<String> popular = db.queryList("""
+            SELECT product_id FROM product_views
+            GROUP BY product_id ORDER BY count(*) DESC LIMIT 10000
+            """);
+
+    for (String productId : popular) {
+        Product product = db.getProduct(productId);
+        jedis.setex("product:" + productId, 3600, serialize(product));
+        Thread.sleep(1);                       // Rate limit to avoid DB spike
+    }
+}
+```
+
+</details>
+
 ---
 
 ### A42. Debugging hit ratio drop (95% → 60%)
@@ -997,6 +1351,31 @@ class CheckoutCache:
         return db.get_inventory(product_id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — fail-open is explicit in the catch</summary>
+
+```java
+class CheckoutCache {
+
+    Product getProduct(String productId) {
+        try {
+            Product cached = cache.get("product:" + productId, Product.class);
+            if (cached != null) return cached;
+        } catch (JedisException e) {
+            // Fail-open: a cache outage must not become a checkout outage.
+        }
+        return db.getProduct(productId);
+    }
+
+    int getInventory(String productId) {
+        // Inventory must be real-time — no cache, no fallback.
+        return db.getInventory(productId);
+    }
+}
+```
+
+</details>
+
 **Invalidation**: Event-driven via Kafka for price/inventory changes.
 
 ---
@@ -1050,6 +1429,21 @@ cache = ReadThroughCache(loader=lambda key: db.get(key))
 value = cache.get("user:123")  # Transparently fetches if miss
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Caffeine gives you read-through, eviction and single-flight in one object</summary>
+
+```java
+// Read-through — Caffeine's LoadingCache is the standard Java answer.
+LoadingCache<String, User> cache = Caffeine.newBuilder()
+        .maximumSize(10_000)
+        .expireAfterWrite(Duration.ofMinutes(5))
+        .build(key -> db.get(key));            // the loader
+
+User value = cache.get("user:123");            // Transparently fetches if miss
+```
+
+</details>
+
 ---
 
 ### QB5. Consistent hashing for cache routing
@@ -1067,6 +1461,26 @@ def cache_get(key: str):
     node = get_cache_node(key)
     return redis_clients[node].get(key)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Consistent hashing for cache client
+ConsistentHashRing ring = new ConsistentHashRing(
+        List.of("cache1", "cache2", "cache3"));
+
+String getCacheNode(String key) {
+    return ring.getNode(key);
+}
+
+String cacheGet(String key) {
+    String node = getCacheNode(key);
+    return redisClients.get(node).get(key);
+}
+```
+
+</details>
 
 ---
 

@@ -70,6 +70,27 @@ with_95_cache = 50_000     # 5% miss rate → 50K queries/sec to DB
 # 20x reduction in database load
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same arithmetic</summary>
+
+```java
+// Latency comparison
+double dbLatencyMs    = 50;
+double cacheLatencyMs = 1;
+
+// At a 95% hit ratio
+double avgLatency = (0.95 * cacheLatencyMs) + (0.05 * dbLatencyMs);
+// = 0.95 + 2.5 = 3.45 ms (14x improvement)
+
+// Database load reduction
+long withoutCache = 1_000_000;   // queries/sec to DB
+long with95Cache  =    50_000;   // 5% miss rate
+// 20x reduction in database load
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — When NOT to Cache
@@ -139,6 +160,34 @@ def choose_caching_strategy(workload):
         return "write-around"  # Or no cache
 ```
 
+<details>
+<summary>☕ <b>Java</b> — enums both ways — no stringly-typed comparisons</summary>
+
+```java
+enum Strategy { CACHE_ASIDE, WRITE_THROUGH, WRITE_BACK, WRITE_AROUND }
+
+Strategy chooseCachingStrategy(Workload w) {
+    double readWriteRatio = (double) w.reads() / w.writes();
+
+    if (readWriteRatio > 100 && w.consistency() == Consistency.EVENTUAL) {
+        return Strategy.CACHE_ASIDE;      // Most common
+    }
+    if (w.consistency() == Consistency.STRONG) {
+        return Strategy.WRITE_THROUGH;
+    }
+    if (w.writeLatencyToleranceMs() < 5 && w.dataLossAcceptable()) {
+        return Strategy.WRITE_BACK;
+    }
+    if (readWriteRatio < 1) {             // Write-heavy
+        return Strategy.WRITE_AROUND;     // Or no cache at all
+    }
+    return Strategy.CACHE_ASIDE;
+}
+```
+
+</details>
+
+
 **Strategy comparison with code**:
 
 ```python
@@ -179,6 +228,59 @@ class WriteBackPattern:
             db.set(key, cache.get(key))
         self.dirty_keys.clear()
 ```
+
+<details>
+<summary>☕ <b>Java</b> — all three, with the write-back set made concurrent</summary>
+
+```java
+// CACHE-ASIDE
+class CacheAsidePattern {
+    Object read(String key) {
+        Object value = cache.get(key);
+        if (value == null) {
+            value = db.get(key);
+            cache.set(key, value, Duration.ofSeconds(300));
+        }
+        return value;
+    }
+    void write(String key, Object value) {
+        db.set(key, value);
+        cache.delete(key);          // Invalidate, don't update — updates race
+    }
+}
+
+// WRITE-THROUGH
+class WriteThroughPattern {
+    Object read(String key) {
+        Object v = cache.get(key);
+        return v != null ? v : db.get(key);
+    }
+    void write(String key, Object value) {
+        cache.set(key, value);
+        db.set(key, value);         // Synchronous — write latency includes both
+    }
+}
+
+// WRITE-BACK
+class WriteBackPattern {
+    private final Set<String> dirtyKeys = ConcurrentHashMap.newKeySet();
+
+    void write(String key, Object value) {
+        cache.set(key, value);
+        dirtyKeys.add(key);         // Don't write to the DB yet
+    }
+
+    void flush() {                  // Background job
+        for (String key : new ArrayList<>(dirtyKeys)) {
+            db.set(key, cache.get(key));
+            dirtyKeys.remove(key);
+        }
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -223,6 +325,34 @@ def get_with_lease(key):
     memcache.set_with_lease(key, value, lease_token)
     return value
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same lease protocol</summary>
+
+```java
+// Memcached leases: the cache itself does the single-flight.
+Object getWithLease(String key) throws InterruptedException {
+    Object value = memcache.get(key);
+    if (value != null) return value;
+
+    // Request a lease — returns a token, or tells us to retry.
+    LeaseResult lease = memcache.getLease(key);
+    if (lease.isRetry()) {
+        Thread.sleep(10);
+        return getWithLease(key);        // Another client is fetching
+    }
+
+    // We hold the lease — we're the one allowed to fill it.
+    value = db.get(key);
+    memcache.setWithLease(key, value, lease.token());
+    return value;
+}
+// This is Facebook's published answer to the stampede: the cache hands out
+// permission to recompute, so only one client ever hits the DB per key.
+```
+
+</details>
+
 
 ---
 
@@ -283,6 +413,64 @@ class LRUCache:
         self._remove(lru)
         del self.map[lru.key]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — the O(1) get/put both come from the map + list pairing</summary>
+
+```java
+// Hand-rolled LRU with a doubly-linked list + map.
+// In real Java you'd use LinkedHashMap(16, 0.75f, true) with
+// removeEldestEntry, or Caffeine — but this is what the interview asks for.
+class LRUCache<K, V> {
+    private final int capacity;
+    private final Map<K, Node<K, V>> map = new HashMap<>();
+    private final Node<K, V> head = new Node<>(null, null);   // Most recent
+    private final Node<K, V> tail = new Node<>(null, null);   // Least recent
+
+    LRUCache(int capacity) {
+        this.capacity = capacity;
+        head.next = tail;
+        tail.prev = head;
+    }
+
+    V get(K key) {
+        Node<K, V> node = map.get(key);
+        if (node == null) return null;
+        moveToFront(node);
+        return node.value;
+    }
+
+    void put(K key, V value) {
+        Node<K, V> node = map.get(key);
+        if (node != null) {
+            node.value = value;
+            moveToFront(node);
+            return;
+        }
+        if (map.size() >= capacity) evictLru();
+
+        node = new Node<>(key, value);
+        map.put(key, node);
+        addToFront(node);
+    }
+
+    private void moveToFront(Node<K, V> node) { remove(node); addToFront(node); }
+
+    private void evictLru() {
+        Node<K, V> lru = tail.prev;
+        remove(lru);
+        map.remove(lru.key);        // must remove from the map too, or you leak
+    }
+
+    private static class Node<K, V> {
+        K key; V value; Node<K, V> prev, next;
+        Node(K key, V value) { this.key = key; this.value = value; }
+    }
+}
+```
+
+</details>
+
 
 **Redis eviction policies**:
 ```redis
@@ -398,6 +586,39 @@ top_10 = redis.zrevrange("leaderboard", 0, 9, withscores=True)
 rank = redis.zrevrank("leaderboard", "player:42")  # 0-indexed rank
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same five structures, Jedis naming</summary>
+
+```java
+// STRINGS — simple values, counters
+jedis.set("user:123:name", "Alice");
+jedis.incr("page:views:home");                       // Atomic increment
+
+// HASHES — structured objects (saves memory vs JSON)
+jedis.hset("user:123", Map.of(
+        "name",       "Alice",
+        "email",      "alice@example.com",
+        "last_login", "2024-03-30"));
+Map<String, String> user = jedis.hgetAll("user:123");
+
+// LISTS — queues, recent items
+jedis.lpush("feed:user:123", "new_post_456");        // Add to front
+jedis.ltrim("feed:user:123", 0, 99);                 // Keep last 100
+List<String> recent = jedis.lrange("feed:user:123", 0, 9);
+
+// SETS — unique collections, tags
+jedis.sadd("post:123:tags", "java", "caching", "redis");
+Set<String> common = jedis.sinter("post:123:tags", "post:456:tags");
+
+// SORTED SETS — leaderboards, priority queues
+jedis.zadd("leaderboard", Map.of("player:42", 1500d, "player:17", 1200d));
+List<Tuple> top10 = jedis.zrevrangeWithScores("leaderboard", 0, 9);
+Long rank = jedis.zrevrank("leaderboard", "player:42");   // 0-indexed
+```
+
+</details>
+
+
 **Time complexity cheat sheet**:
 | Operation | Complexity | Example |
 |---|---|---|
@@ -456,6 +677,22 @@ redis.set("{user:123}:sessions", "...")
 redis.mget("{user:123}:profile", "{user:123}:settings")
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same hash-tag trick</summary>
+
+```java
+// Hash tags: only the text inside {} is hashed, so these land on one slot.
+jedis.set("{user:123}:profile",  "...");
+jedis.set("{user:123}:settings", "...");
+jedis.set("{user:123}:sessions", "...");
+
+// MGET only works across keys in the SAME slot — that's what this buys you.
+List<String> vals = jedis.mget("{user:123}:profile", "{user:123}:settings");
+```
+
+</details>
+
+
 **Pipeline for reduced latency**:
 ```python
 # Without pipeline: 100 round trips
@@ -468,6 +705,29 @@ for i in range(100):
     pipe.get(f"key:{i}")
 results = pipe.execute()  # 1ms total
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Response objects only resolve after sync()</summary>
+
+```java
+// Without pipeline: 100 round trips
+for (int i = 0; i < 100; i++) {
+    jedis.get("key:" + i);                 // ~100ms total
+}
+
+// With pipeline: 1 round trip
+Pipeline pipe = jedis.pipelined();
+List<Response<String>> responses = new ArrayList<>();
+for (int i = 0; i < 100; i++) {
+    responses.add(pipe.get("key:" + i));   // queued, not sent
+}
+pipe.sync();                               // ~1ms total — one network round trip
+
+List<String> results = responses.stream().map(Response::get).toList();
+```
+
+</details>
+
 
 ---
 
@@ -516,6 +776,23 @@ def update_with_double_delete(key: str, value: Any):
     cache.delete(key)          # 4. Invalidate any stale repopulation
 ```
 
+<details>
+<summary>☕ <b>Java</b> — scheduled, so the request thread doesn't sleep</summary>
+
+```java
+void updateWithDoubleDelete(String key, Object value) {
+    cache.delete(key);                     // 1. Invalidate old
+    db.update(key, value);                 // 2. Update DB
+
+    // 3-4. Second delete catches a read that repopulated the cache with the
+    // OLD value between steps 1 and 2. Schedule it — don't block the caller.
+    scheduler.schedule(() -> cache.delete(key), 500, TimeUnit.MILLISECONDS);
+}
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Airbnb's Cache Invalidation
@@ -546,6 +823,37 @@ class DelayedInvalidation:
         
         cache.delete(key)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same version guard</summary>
+
+```java
+class DelayedInvalidation {
+
+    void onListingUpdate(String listingId, Update update) {
+        db.updateListing(listingId, update);      // 1. Primary database
+
+        // 2. Delay the invalidation so read replicas can catch up first —
+        // otherwise the refill reads a stale replica and re-caches old data.
+        invalidationQueue.enqueue(new InvalidationJob(
+                "listing:" + listingId,
+                Duration.ofSeconds(5),
+                update.version()));
+    }
+
+    void processInvalidation(InvalidationJob job) {
+        CachedListing current = cache.get(job.key(), CachedListing.class);
+
+        // A newer version already landed — leave it alone.
+        if (current != null && current.version() >= job.version()) return;
+
+        cache.delete(job.key());
+    }
+}
+```
+
+</details>
+
 
 **Monitoring invalidation health**:
 ```yaml
@@ -632,6 +940,41 @@ def get_user(user_id: str):
     return user
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Guava BloomFilter — don't hand-roll this in production</summary>
+
+```java
+// Guava's BloomFilter sizes itself for a target false-positive rate.
+BloomFilter<String> validIds = BloomFilter.create(
+        Funnels.stringFunnel(UTF_8),
+        100_000_000,          // expected insertions
+        0.001);               // 0.1% false positive rate
+
+db.getAllIds().forEach(validIds::put);
+
+User getUser(String userId) {
+    // Fast check: is this ID possibly valid?
+    if (!validIds.mightContain(userId)) {
+        return null;          // DEFINITELY doesn't exist — no DB hit at all
+    }
+
+    User cached = cache.get("user:" + userId, User.class);
+    if (cached != null) return cached;
+
+    User user = db.getUser(userId);
+    if (user != null) {
+        cache.set("user:" + userId, user);
+    } else {
+        // Bloom false positive — negative-cache it so we don't re-ask.
+        cache.set("user:" + userId, NULL_MARKER, Duration.ofSeconds(60));
+    }
+    return user;
+}
+```
+
+</details>
+
+
 **Avalanche mitigation — Jittered TTL**:
 ```python
 import random
@@ -644,6 +987,25 @@ def set_with_jitter(key: str, value: Any, base_ttl: int):
 # Example: base 1 hour, actual 54-66 minutes
 set_with_jitter("product:123", product_data, 3600)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same jitter</summary>
+
+```java
+void setWithJitter(String key, Object value, int baseTtlSeconds) {
+    int spread = baseTtlSeconds / 10;
+    int jitter = ThreadLocalRandom.current().nextInt(-spread, spread + 1);
+    cache.set(key, value, Duration.ofSeconds(baseTtlSeconds + jitter));
+}
+
+// Example: base 1 hour → actual 54-66 minutes.
+// Without jitter, every key written in the same batch expires in the same
+// second, and you get a synchronized stampede once an hour.
+setWithJitter("product:123", productData, 3600);
+```
+
+</details>
+
 
 ---
 
@@ -751,6 +1113,48 @@ class MultiLayerCache:
         self.pubsub.publish("l1_invalidate", key)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the L2-before-L1 ordering made explicit</summary>
+
+```java
+class MultiLayerCache {
+    private final LocalCache l1 = new LocalCache(10_000, Duration.ofSeconds(60));
+    private final RedisCache l2 = new RedisCache("redis:6379");
+
+    Object get(String key) {
+        Object value = l1.get(key);                 // L1: in-process, ~0.1 µs
+        if (value != null) return value;
+
+        value = l2.get(key);                        // L2: Redis, ~1-5 ms
+        if (value != null) {
+            l1.set(key, value);                     // Populate L1
+            return value;
+        }
+
+        value = db.get(key);                        // Origin, ~10-100 ms
+        if (value != null) {
+            l2.set(key, value);
+            l1.set(key, value);
+        }
+        return value;
+    }
+
+    void invalidate(String key) {
+        // Order matters: L2 FIRST, then L1. The other way round lets an L1
+        // miss repopulate from a stale L2.
+        l2.delete(key);
+        broadcastL1Invalidation(key);
+    }
+
+    private void broadcastL1Invalidation(String key) {
+        pubsub.publish("l1_invalidate", key);       // tell every app instance
+    }
+}
+```
+
+</details>
+
+
 **L1 coherence via pub/sub**:
 ```python
 class L1CacheWithCoherence:
@@ -766,6 +1170,35 @@ class L1CacheWithCoherence:
                 key = message["data"].decode()
                 self.local.pop(key, None)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — daemon thread + ConcurrentHashMap</summary>
+
+```java
+class L1CacheWithCoherence {
+    private final Map<String, Object> local = new ConcurrentHashMap<>();
+    private final ExecutorService listener = Executors.newSingleThreadExecutor();
+
+    L1CacheWithCoherence(JedisPool pool) {
+        listener.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                // subscribe() blocks forever — hence its own thread.
+                jedis.subscribe(new JedisPubSub() {
+                    @Override
+                    public void onMessage(String channel, String key) {
+                        local.remove(key);
+                    }
+                }, "l1_invalidate");
+            }
+        });
+    }
+}
+// An L1 is inconsistent by construction: 20 instances, 20 copies, and no
+// way to invalidate them atomically. Keep TTLs in seconds.
+```
+
+</details>
+
 
 ---
 
@@ -819,6 +1252,31 @@ class HotDataCache:
         # Always hits local cache, never misses
         return self.surge_zones.get(zone_id, 1.0)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — volatile + whole-map swap: readers never see a half-updated map</summary>
+
+```java
+class HotDataCache {
+    // Never expires — a background task keeps it fresh instead.
+    private volatile Map<String, Double> surgeZones = Map.of();
+
+    HotDataCache(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(
+                () -> surgeZones = fetchSurgeZones(),   // atomic reference swap
+                0, 5, TimeUnit.SECONDS);
+    }
+
+    double getSurge(String zoneId) {
+        return surgeZones.getOrDefault(zoneId, 1.0);    // always hits, never misses
+    }
+}
+// Refresh-ahead: for a small, always-hot dataset, proactive refresh beats
+// TTL expiry — there's no miss to stampede on.
+```
+
+</details>
+
 
 ---
 

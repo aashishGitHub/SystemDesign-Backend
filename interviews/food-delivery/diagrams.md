@@ -52,6 +52,8 @@ flowchart TD
     style TRACK fill:#fed7aa,stroke:#ea580c
     style KAFKA fill:#fef9c3,stroke:#ca8a04
 ```
+![The three traffic paths](images/three_traffic_paths_architecture.jpg)
+
 
 **What the interviewer is checking:**
 - You separate the three paths and give each its own guarantees/infra — not one monolithic service or DB.
@@ -86,6 +88,8 @@ flowchart TD
     style CHECKOUT fill:#dbeafe,stroke:#1d4ed8
     style ABORT fill:#fee2e2,stroke:#dc2626
 ```
+![Menu body plus availability overlay](images/menu_architecture_availability_overlay.jpg)
+
 
 **What the interviewer is checking:**
 - Cache by `menu_version` (immutable key) so a publish creates a new key rather than mutating a cached object — same as immutable video segments.
@@ -160,6 +164,8 @@ sequenceDiagram
         end
     end
 ```
+![Authorize then capture](images/authorize_then_capture_payment_flow.jpg)
+
 
 **What the interviewer is checking:**
 - The synchronous core (validate → total → authorize → create) is the atomic commit; the customer gets a fast, definite answer.
@@ -236,6 +242,8 @@ flowchart TD
     style RECON fill:#e0e7ff,stroke:#4338ca
     style SAGA fill:#dbeafe,stroke:#1d4ed8
 ```
+![Event-driven saga with outbox](images/event_driven_saga_outbox_pattern.jpg)
+
 
 **What the interviewer is checking:**
 - Order commits synchronously then emits an event; downstream reacts independently (decoupling, resilience, fast response) at the cost of eventual consistency.
@@ -267,6 +275,8 @@ flowchart LR
     style BAD2 fill:#fee2e2,stroke:#dc2626
     style MERCHANT fill:#e0e7ff,stroke:#4338ca
 ```
+![Prep-aware JIT dispatch timeline](images/jit_courier_dispatch_timeline.jpg)
+
 
 **What the interviewer is checking:**
 - The core equation: `offer_time = food_ready − courier_to_restaurant`, recomputed continuously.
@@ -568,7 +578,19 @@ flowchart TD
 
 ### The 60-second narration
 
-*(one line per numbered box — draw it in this order and say this)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Three actors — customer, restaurant, courier. The restaurant is first-class.
+2. Gateway: auth, rate-limit, routing. One front door.
+3. Browse is ~90% of traffic, eventual, served from cache and search.
+4. The order path is small volume but must be perfectly correct.
+5. Kafka: everything after commit is an event, so a rush is a backlog.
+6. Track is the real scale problem: 125K GPS writes/s, ~3M live connections.
+7. Dispatch is prep-aware JIT. The prep-time estimate is the linchpin.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Three actors** (customer, restaurant, courier) — "3-sided marketplace; the restaurant is a first-class actor."
 2. **Gateway** — "auth, rate-limit, routing — one front door."
@@ -690,3 +712,15 @@ flowchart TD
 - "So to summarize: three traffic paths, three different stores. Browse lives on a cache because reads dominate. Order lives on a strongly-consistent database because correctness matters more than speed there. Tracking lives on an ephemeral in-memory store because it's a pure scale problem. An event bus glues them together, so a spike becomes a backlog instead of an outage, and a failure gets undone by a compensating action instead of corrupting the order."
 
 > 💡 **Practice tip:** say this transcript aloud, timing yourself, twice a week before an interview. The goal isn't to memorize the words — it's to internalize the **structure** (scope → architecture → data → API → two deep dives → close) so you can rebuild it under pressure even when the interviewer interrupts and reorders you.
+
+---
+
+## Image index
+
+| Image | Shows | Diagram |
+|---|---|---|
+| `three_traffic_paths_architecture.jpg` | The three traffic paths | Diagram 1 |
+| `menu_architecture_availability_overlay.jpg` | Menu body plus availability overlay | Diagram 2 |
+| `authorize_then_capture_payment_flow.jpg` | Authorize then capture | Diagram 4 |
+| `event_driven_saga_outbox_pattern.jpg` | Event-driven saga with outbox | Diagram 6 |
+| `jit_courier_dispatch_timeline.jpg` | Prep-aware JIT dispatch timeline | Diagram 7 |

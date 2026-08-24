@@ -131,6 +131,22 @@ if seat.status == 'AVAILABLE':     # step 1: look
     seat.status = 'HELD'           # step 2: take
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the race is identical — and so is the fix</summary>
+
+```java
+if (seat.status() == Status.AVAILABLE) {   // step 1: look
+    seat.setStatus(Status.HELD);           // step 2: take
+}
+// Same bug in any language: two threads can both pass step 1.
+// The fix is one atomic operation, not two:
+//   UPDATE seats SET status='HELD' WHERE id=? AND status='AVAILABLE'
+// Zero rows updated ⇒ somebody beat you to it.
+```
+
+</details>
+
+
 This is broken, and it is worth being precise about *where*: the bug is not in either line. **The bug is the
 gap between them.** Priya's request runs line 1 and sees "available." Before it reaches line 2, Dev's request
 also runs line 1 and also sees "available." Now both run line 2. Both think they won. One chair, two owners.

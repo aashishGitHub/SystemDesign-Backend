@@ -65,6 +65,35 @@ class FanoutOnWriteService:
             await pipeline.execute()
 ```
 
+<details>
+<summary>☕ <b>Java</b> — batched + pipelined, same as the Python</summary>
+
+```java
+class FanoutOnWriteService {
+
+    void handleTweet(Tweet tweet) {
+        // 1. Persist to Cassandra (source of truth)
+        session.execute(insertTweet.bind(
+                tweet.id(), tweet.authorId(), tweet.content(), tweet.createdAt()));
+
+        // 2. Page through followers — never load 50M ids into memory.
+        followerDao.getFollowersBatched(tweet.authorId(), 1000).forEach(batch -> {
+            // 3. Fan out to each follower's timeline
+            Pipeline pipe = jedis.pipelined();
+            for (String followerId : batch) {
+                String key = "timeline:" + followerId;
+                pipe.zadd(key, tweet.createdAt().toEpochMilli(), tweet.id());
+                pipe.zremrangeByRank(key, 0, -801);     // Trim to 800
+            }
+            pipe.sync();
+        });
+    }
+}
+```
+
+</details>
+
+
 **Fan-out on read implementation:**
 
 ```python
@@ -86,6 +115,34 @@ class FanoutOnReadService:
         
         return all_tweets[:limit]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — CompletableFuture + flatMap replaces gather + flatten</summary>
+
+```java
+class FanoutOnReadService {
+
+    List<Tweet> getFeed(String userId, int limit) {
+        List<String> followees = followDao.getFollowees(userId);
+
+        // Query each followee in parallel, capped to avoid explosion.
+        List<CompletableFuture<List<Tweet>>> futures = followees.stream()
+                .limit(200)
+                .map(id -> CompletableFuture.supplyAsync(
+                        () -> tweetDao.getRecentTweets(id, 20), pool))
+                .toList();
+
+        return futures.stream()
+                .flatMap(f -> f.join().stream())
+                .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+                .limit(limit)
+                .toList();
+    }
+}
+```
+
+</details>
+
 
 **Comparison table:**
 
@@ -182,6 +239,38 @@ class TimelineCacheWithProtection:
             await self.redis.delete(lock_key)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — try/finally guarantees release even on exception</summary>
+
+```java
+class TimelineCacheWithProtection {
+
+    List<String> getTimeline(String userId) throws InterruptedException {
+        String key     = "timeline:" + userId;
+        String lockKey = "lock:rebuild:" + userId;
+
+        Set<String> timeline = jedis.zrevrange(key, 0, 100);
+        if (!timeline.isEmpty()) return new ArrayList<>(timeline);
+
+        // Distributed lock prevents every request rebuilding at once.
+        String acquired = jedis.set(lockKey, "1", SetParams.setParams().nx().ex(30));
+        if (!"OK".equals(acquired)) {
+            Thread.sleep(500);                       // someone else is rebuilding
+            return new ArrayList<>(jedis.zrevrange(key, 0, 100));
+        }
+
+        try {
+            return rebuildTimeline(userId);
+        } finally {
+            jedis.del(lockKey);                      // always release
+        }
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ## 2. The Celebrity Problem
@@ -255,6 +344,66 @@ class HybridFanoutService:
         return celebrities
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the push/pull split, with the empty-array guard sadd needs</summary>
+
+```java
+class HybridFanoutService {
+    static final long CELEBRITY_THRESHOLD = 10_000;
+
+    void handleTweet(Tweet tweet) {
+        User author = userDao.getUser(tweet.authorId());
+        persistTweet(tweet);
+
+        if (author.followerCount() < CELEBRITY_THRESHOLD) {
+            fanoutOnWrite(tweet);        // Normal user: push
+        } else {
+            cacheTweet(tweet);           // Celebrity: skip fan-out, readers pull
+        }
+    }
+
+    List<Tweet> getFeed(String userId) {
+        // 1. Pre-computed timeline (non-celebrity tweets)
+        List<String> timelineIds = new ArrayList<>(
+                jedis.zrevrange("timeline:" + userId, 0, 200));
+
+        // 2-3. Pull recent tweets from each followed celebrity
+        List<Tweet> celebrityTweets = getFollowedCelebrities(userId).stream()
+                .flatMap(id -> getRecentTweets(id, 10).stream())
+                .toList();
+
+        // 4. Merge and sort
+        List<String> allIds = new ArrayList<>(timelineIds);
+        celebrityTweets.forEach(t -> allIds.add(t.id()));
+
+        return hydrateTweets(allIds).stream()
+                .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+                .limit(100)
+                .toList();
+    }
+
+    List<String> getFollowedCelebrities(String userId) {
+        String cacheKey = "celebrity_follows:" + userId;
+
+        Set<String> cached = jedis.smembers(cacheKey);
+        if (!cached.isEmpty()) return new ArrayList<>(cached);
+
+        List<String> celebrities = followDao.getFollowees(userId).stream()
+                .filter(this::isCelebrity)
+                .toList();
+
+        if (!celebrities.isEmpty()) {
+            jedis.sadd(cacheKey, celebrities.toArray(new String[0]));
+            jedis.expire(cacheKey, 3600);
+        }
+        return celebrities;
+    }
+}
+```
+
+</details>
+
+
 **Threshold tuning considerations:**
 
 | Threshold | Fan-out writes/day | Celebrity pull queries/read |
@@ -306,6 +455,44 @@ class FollowerCountWatcher:
         async for follower_id in self.get_followers_stream(user_id):
             await self.redis.sadd(f"celebrity_follows:{follower_id}", user_id)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same transition, streamed</summary>
+
+```java
+/**
+ * Background job that detects follower-count milestones and moves users
+ * between the push and pull models.
+ */
+class FollowerCountWatcher {
+
+    void checkTransitions() {
+        List<CountChange> users = jdbc.query("""
+                SELECT user_id, previous_follower_count, current_follower_count
+                FROM user_follower_counts
+                WHERE (previous_follower_count <  10000 AND current_follower_count >= 10000)
+                   OR (previous_follower_count >= 10000 AND current_follower_count <  10000)
+                """, countChangeMapper);
+
+        for (CountChange u : users) {
+            if (u.currentFollowerCount() >= 10_000) transitionToCelebrity(u.userId());
+            else                                    transitionToNormal(u.userId());
+        }
+    }
+
+    void transitionToCelebrity(String userId) {
+        userDao.setCelebrity(userId, true);   // future tweets skip fan-out
+
+        // Expensive but rare: every follower needs this author in their
+        // celebrity set. Stream it — don't materialize 10M ids.
+        getFollowersStream(userId).forEach(followerId ->
+                jedis.sadd("celebrity_follows:" + followerId, userId));
+    }
+}
+```
+
+</details>
+
 
 **Production incident: World Cup 2014 (Twitter)**
 
@@ -384,6 +571,44 @@ class TimelineCache:
         )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — and why the second method exists</summary>
+
+```java
+class TimelineCache {
+    private static final int  MAX_SIZE = 800;
+    private static final long TTL_SECONDS = 7 * 24 * 3600;   // 7 days
+
+    void addTweet(String userId, String tweetId, long timestamp) {
+        String key = "timeline:" + userId;
+        Pipeline pipe = jedis.pipelined();
+        pipe.zadd(key, timestamp, tweetId);
+        pipe.zremrangeByRank(key, 0, -MAX_SIZE - 1);         // Trim to max size
+        pipe.expire(key, TTL_SECONDS);                       // Refresh TTL
+        pipe.sync();
+    }
+
+    void removeTweet(String userId, String tweetId) {
+        jedis.zrem("timeline:" + userId, tweetId);
+    }
+
+    // Offset paging: fine for page 1, degrades and duplicates as you scroll.
+    List<String> getFeed(String userId, int offset, int limit) {
+        return new ArrayList<>(jedis.zrevrange(
+                "timeline:" + userId, offset, offset + limit - 1));
+    }
+
+    // Cursor paging: "give me tweets older than X" — stable under inserts.
+    List<Tuple> getFeedWithCursor(String userId, double maxTimestamp, int limit) {
+        return new ArrayList<>(jedis.zrevrangeByScoreWithScores(
+                "timeline:" + userId, maxTimestamp, Double.NEGATIVE_INFINITY, 0, limit));
+    }
+}
+```
+
+</details>
+
+
 **Tweet cache (separate from timeline):**
 
 ```python
@@ -425,6 +650,57 @@ class TweetCache:
         
         return tweets
 ```
+
+<details>
+<summary>☕ <b>Java</b> — pipelined hydrate + backfill</summary>
+
+```java
+class TweetCache {
+    private static final long TTL_SECONDS = 24 * 3600;
+
+    void cacheTweet(Tweet tweet) {
+        String key = "tweet:" + tweet.id();
+        jedis.hset(key, Map.of(
+                "id",            tweet.id(),
+                "author_id",     tweet.authorId(),
+                "content",       tweet.content(),
+                "created_at",    tweet.createdAt().toString(),
+                "like_count",    String.valueOf(tweet.likeCount()),
+                "retweet_count", String.valueOf(tweet.retweetCount())));
+        jedis.expire(key, TTL_SECONDS);
+    }
+
+    List<Map<String, String>> hydrateTweets(List<String> tweetIds) {
+        // Batch the fetch — one pipeline, not N round trips.
+        Pipeline pipe = jedis.pipelined();
+        List<Response<Map<String, String>>> responses = tweetIds.stream()
+                .map(id -> pipe.hgetAll("tweet:" + id))
+                .toList();
+        pipe.sync();
+
+        List<Map<String, String>> tweets = new ArrayList<>();
+        List<String> missingIds = new ArrayList<>();
+
+        for (int i = 0; i < tweetIds.size(); i++) {
+            Map<String, String> r = responses.get(i).get();
+            if (r.isEmpty()) missingIds.add(tweetIds.get(i));
+            else             tweets.add(r);
+        }
+
+        // Backfill the misses from the DB.
+        if (!missingIds.isEmpty()) {
+            for (Tweet t : db.getTweets(missingIds)) {
+                cacheTweet(t);
+                tweets.add(toMap(t));
+            }
+        }
+        return tweets;
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -606,6 +882,31 @@ class CelebrityTweetCache:
         return tweets
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+class CelebrityTweetCache {
+
+    List<Tweet> getCelebrityTweets(String authorId, int limit) {
+        String cacheKey = "celeb_tweets:" + authorId;
+
+        List<Tweet> cached = cdnCache.get(cacheKey);
+        if (cached != null) return cached;
+
+        List<Tweet> tweets = db.getTweets(authorId, limit);
+
+        // Short TTL — a celebrity's recent tweets change often, and this is
+        // read by millions, so even 60s absorbs enormous load.
+        cdnCache.set(cacheKey, tweets, Duration.ofSeconds(60));
+        return tweets;
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ## 5. Real-Time Updates
@@ -667,6 +968,51 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         manager.disconnect(user_id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — and the honest note on where thread-per-connection stops working</summary>
+
+```java
+// Spring WebSocket + Redis Pub/Sub
+@Component
+class ConnectionManager extends TextWebSocketHandler {
+
+    private final Map<String, WebSocketSession> active = new ConcurrentHashMap<>();
+    private final ExecutorService subscribers = Executors.newCachedThreadPool();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) {
+        String userId = userIdOf(session);
+        active.put(userId, session);
+
+        // Each subscription blocks, so it gets its own thread.
+        subscribers.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                jedis.subscribe(new JedisPubSub() {
+                    @Override
+                    public void onMessage(String channel, String message) {
+                        WebSocketSession s = active.get(userId);
+                        if (s != null && s.isOpen()) {
+                            try { s.sendMessage(new TextMessage(message)); }
+                            catch (IOException e) { log.warn("send failed", e); }
+                        }
+                    }
+                }, "feed:" + userId);
+            }
+        });
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        active.remove(userIdOf(session));
+    }
+}
+// Thread-per-subscription doesn't scale past a few thousand sockets. At real
+// scale you use one shared subscriber and route in-process, or Redis Streams.
+```
+
+</details>
+
+
 **Fan-out to WebSocket:**
 
 ```python
@@ -683,6 +1029,27 @@ async def fanout_tweet_realtime(tweet):
             })
         )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — serialize once, publish many</summary>
+
+```java
+void fanoutTweetRealtime(Tweet tweet) {
+    // Only publish to followers who actually have a socket open — there's no
+    // point paying pub/sub cost for someone who's offline.
+    Pipeline pipe = jedis.pipelined();
+    String payload = json.writeValueAsString(
+            Map.of("type", "new_tweet", "tweet", tweet));
+
+    for (String followerId : getOnlineFollowers(tweet.authorId())) {
+        pipe.publish("feed:" + followerId, payload);
+    }
+    pipe.sync();
+}
+```
+
+</details>
+
 
 ---
 
@@ -804,6 +1171,54 @@ class FeedRanker:
         )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — note the /1000.0 — integer division would zero the score</summary>
+
+```java
+class FeedRanker {
+
+    List<Tweet> rankFeed(String userId, List<Tweet> candidates) {
+        // Stage 1: cheap score over ALL candidates
+        List<Tweet> topCandidates = candidates.stream()
+                .sorted(Comparator.comparingDouble(
+                        (Tweet t) -> quickScore(t, userId)).reversed())
+                .limit(50)
+                .toList();
+
+        // Stage 2: expensive ML re-rank over the top 50 only
+        if (mlModel == null) return topCandidates;
+
+        double[] scores = mlModel.predict(extractFeatures(userId, topCandidates));
+
+        return IntStream.range(0, topCandidates.size())
+                .boxed()
+                .sorted(Comparator.comparingDouble((Integer i) -> scores[i]).reversed())
+                .map(topCandidates::get)
+                .toList();
+    }
+
+    double quickScore(Tweet tweet, String userId) {
+        // Time decay: newer = higher
+        double ageHours = Duration.between(tweet.createdAt(), Instant.now()).toMinutes() / 60.0;
+        double timeScore = 1 / (1 + Math.sqrt(ageHours));
+
+        double engagement = tweet.likeCount()    * 1.0
+                          + tweet.retweetCount() * 2.0
+                          + tweet.replyCount()   * 1.5;
+        double engagementScore = Math.min(engagement / 1000.0, 1.0);   // Cap at 1
+
+        double affinity = getAuthorAffinity(userId, tweet.authorId());
+
+        return timeScore       * 0.4
+             + engagementScore * 0.3
+             + affinity        * 0.3;
+    }
+}
+```
+
+</details>
+
+
 **Feature extraction for ML model:**
 
 ```python
@@ -830,6 +1245,42 @@ async def extract_features(self, user_id: str, tweets: list[Tweet]) -> np.ndarra
         features.append(list(f.values()))
     return np.array(features)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the ordering hazard the dict hides</summary>
+
+```java
+double[][] extractFeatures(String userId, List<Tweet> tweets) {
+    double[][] features = new double[tweets.size()][];
+
+    for (int i = 0; i < tweets.size(); i++) {
+        Tweet t = tweets.get(i);
+        features[i] = new double[] {
+                // Tweet features
+                ageHours(t),
+                t.likeCount(),
+                t.retweetCount(),
+                t.mediaUrls().isEmpty() ? 0 : 1,
+                t.content().length(),
+
+                // Author features
+                authorFollowerCount(t.authorId()),
+                authorIsVerified(t.authorId()) ? 1 : 0,
+
+                // User-author interaction features
+                userLikedAuthorTweets(userId, t.authorId()),
+                userRepliedToAuthor(userId, t.authorId()),
+                mutualFollow(userId, t.authorId()) ? 1 : 0,
+        };
+    }
+    return features;
+}
+// Feature ORDER is a contract with the trained model. Reordering these
+// silently corrupts predictions — worth a named constant per index.
+```
+
+</details>
+
 
 ---
 
@@ -887,6 +1338,30 @@ class ExperimentRouter:
         else:
             return "control"  # Production
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and a real bug in the Python version</summary>
+
+```java
+class ExperimentRouter {
+
+    Variant getRankingVariant(String userId) {
+        // String.hashCode() is stable across JVMs but NOT across languages,
+        // and can be negative — floorMod, never %.
+        int bucket = Math.floorMod(userId.hashCode(), 100);
+
+        if (bucket < 1)  return Variant.HOLDOUT;      // 1% never see new features
+        if (bucket < 5)  return Variant.TREATMENT_A;  // New ML model v2
+        if (bucket < 10) return Variant.TREATMENT_B;  // Engagement-weighted
+        return Variant.CONTROL;                       // Production
+    }
+}
+// Python's hash() is randomized per process unless PYTHONHASHSEED is set —
+// the Python version would reassign users on every restart. Java's is stable.
+```
+
+</details>
+
 
 ---
 

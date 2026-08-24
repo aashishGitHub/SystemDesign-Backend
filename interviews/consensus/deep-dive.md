@@ -57,6 +57,26 @@ db.set("leader", my_id)          # A becomes leader
 # An operator points traffic at B. Now A and B both act as leader.
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the race is worse in Java — no GIL to accidentally serialize you</summary>
+
+```java
+// BROKEN attempt 1: read-then-write race (no atomicity)
+String row = db.get("leader");
+if (row == null) {
+    db.set("leader", myId);   // Node A and Node B both saw null → both set it
+}
+// synchronized doesn't help — these are different JVMs on different machines.
+
+// BROKEN attempt 2: no revocation (no lease)
+db.set("leader", myId);       // A becomes leader
+// A is partitioned from clients but KEEPS RUNNING and acting as leader.
+// An operator points traffic at B. Now A and B both act as leader.
+```
+
+</details>
+
+
 The two missing primitives are exactly what consensus systems provide:
 
 | Missing primitive | What it prevents | How consensus provides it |
@@ -129,6 +149,31 @@ class ReplicatedStateMachine:
             cmd = self.log[self.last_applied]
             self.state = cmd.apply(self.state)   # MUST be deterministic
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the determinism traps Java specifically gives you</summary>
+
+```java
+class ReplicatedStateMachine {
+    private final List<Command> log = new ArrayList<>();   // agreed ordered commands
+    private Map<String, String> state = new HashMap<>();   // derived purely from the log
+    private int lastApplied = -1;
+
+    void applyCommitted(int commitIndex) {
+        // Deterministic replay: same log + same order ⇒ same state everywhere.
+        while (lastApplied < commitIndex) {
+            lastApplied++;
+            Command cmd = log.get(lastApplied);
+            state = cmd.apply(state);          // MUST be deterministic
+        }
+    }
+}
+// "Deterministic" bites harder in Java: HashMap iteration order, Instant.now(),
+// and Random all break replay. Log the VALUE, never the instruction.
+```
+
+</details>
+
 
 | Replicate the... | Difficulty | Why |
 |---|---|---|
@@ -210,6 +255,40 @@ class Acceptor:
             return ("ACCEPTED", n)
         return ("REJECT", self.promised_n)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — synchronized, and a note on durability</summary>
+
+```java
+class Acceptor {
+    private long promisedN   = 0;
+    private Long acceptedN   = null;
+    private String acceptedVal = null;
+
+    synchronized Response onPrepare(long n) {
+        if (n > promisedN) {
+            promisedN = n;
+            return Response.promise(acceptedN, acceptedVal);
+        }
+        return Response.reject(promisedN);
+    }
+
+    synchronized Response onAccept(long n, String val) {
+        if (n >= promisedN) {              // not superseded by a later prepare
+            promisedN   = n;
+            acceptedN   = n;
+            acceptedVal = val;
+            return Response.accepted(n);
+        }
+        return Response.reject(promisedN);
+    }
+}
+// These must also be DURABLE before replying — a restart that forgets
+// promisedN can break safety.
+```
+
+</details>
+
 
 The safety-critical line is "reuse the highest-numbered previously-accepted value." Without it, two proposers could get different values chosen. With it, once any value could have been chosen, every subsequent proposal carries it forward.
 
@@ -388,6 +467,39 @@ def become_candidate(self):
         self.become_leader()             # send heartbeats immediately
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the randomized timeout is explicit</summary>
+
+```java
+void becomeCandidate() {
+    currentTerm++;                          // new term
+    state    = State.CANDIDATE;
+    votedFor = this.id;                     // vote for self
+    int votes = 1;
+
+    // Randomized so two nodes rarely time out together.
+    resetElectionTimer(ThreadLocalRandom.current().nextInt(150, 301));
+
+    for (Peer peer : peers) {
+        VoteReply reply = peer.requestVote(new RequestVote(
+                currentTerm, id, lastLogIndex(), lastLogTerm()));
+
+        if (reply.term() > currentTerm) {
+            stepDown(reply.term());         // someone is ahead → abandon election
+            return;
+        }
+        if (reply.voteGranted()) votes++;
+    }
+
+    if (votes >= majority()) {
+        becomeLeader();                     // send heartbeats immediately
+    }
+}
+```
+
+</details>
+
+
 **No two leaders per term:** each node casts at most one vote per term, and winning needs a majority. Two candidates can't both get a majority in the same term because the majorities would overlap on a node that only voted once.
 
 ---
@@ -461,6 +573,37 @@ def handle_append_entries(self, req):
     return Reply(self.current_term, success=True)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+Reply handleAppendEntries(AppendEntries req) {
+    if (req.term() < currentTerm) return new Reply(currentTerm, false);
+    if (req.term() > currentTerm) stepDown(req.term());
+
+    resetElectionTimer();                       // a valid leader is alive
+
+    // --- Log Matching consistency check ---
+    if (req.prevLogIndex() >= 0) {
+        if (req.prevLogIndex() >= log.size()
+                || log.get(req.prevLogIndex()).term() != req.prevLogTerm()) {
+            return new Reply(currentTerm, false);   // gap/mismatch → leader retries lower
+        }
+    }
+
+    // --- Append, overwriting any conflicting suffix ---
+    appendOverwritingConflicts(req.entries(), req.prevLogIndex() + 1);
+
+    if (req.leaderCommit() > commitIndex) {
+        commitIndex = Math.min(req.leaderCommit(), lastLogIndex());
+    }
+    return new Reply(currentTerm, true);
+}
+```
+
+</details>
+
+
 **The client hears "success" only after commit** (majority-durable + applied). That single rule is what makes an acked write survive an immediate leader crash.
 
 | When leader acks client | Durability | Risk |
@@ -524,6 +667,24 @@ def log_is_up_to_date(self, cand_last_term, cand_last_index):
         return cand_last_term > my_term        # higher last term wins
     return cand_last_index >= my_index          # tie on term → longer log wins
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+boolean logIsUpToDate(long candLastTerm, long candLastIndex) {
+    long myTerm  = lastLogTerm();
+    long myIndex = lastLogIndex();
+
+    if (candLastTerm != myTerm) {
+        return candLastTerm > myTerm;      // higher last term wins
+    }
+    return candLastIndex >= myIndex;       // tie on term → longer log wins
+}
+```
+
+</details>
+
 
 Because a leader needs a majority to be elected, and any committed entry is on a majority, the two majorities overlap on at least one node — and that node will refuse to vote for anyone missing the committed entry. Therefore **the new leader's log contains every committed entry.** This is the **Leader Completeness Property**, and it's why Raft never has to copy committed entries *into* a new leader.
 
@@ -650,6 +811,22 @@ def can_make_progress(reachable_nodes, cluster_size):
 can_make_progress(3, 5)   # True  → majority side serves writes
 can_make_progress(2, 5)   # False → minority side blocks
 ```
+
+<details>
+<summary>☕ <b>Java</b> — integer division does the floor for you</summary>
+
+```java
+boolean canMakeProgress(int reachableNodes, int clusterSize) {
+    int quorum = clusterSize / 2 + 1;
+    return reachableNodes >= quorum;
+}
+
+canMakeProgress(3, 5);   // true  → majority side serves writes
+canMakeProgress(2, 5);   // false → minority side blocks
+```
+
+</details>
+
 
 Only one side can ever hold a majority (majorities can't be disjoint), so **at most one side makes progress** — split-brain of *committed* state is impossible. When the partition heals, the minority nodes receive the missing committed entries via AppendEntries/InstallSnapshot and rejoin.
 
@@ -782,6 +959,39 @@ def campaign(zk, path="/election"):
         # predecessor gone → loop and re-check whether I'm now lowest
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Curator; in practice use LeaderLatch</summary>
+
+```java
+String campaign(CuratorFramework zk, String path) throws Exception {
+    String me = zk.create()
+            .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
+            .forPath(path + "/n_");                  // e.g. n_0000000007
+
+    while (true) {
+        List<String> kids = new ArrayList<>(zk.getChildren().forPath(path));
+        Collections.sort(kids);
+
+        int i = kids.indexOf(basename(me));
+        if (i == 0) return "LEADER";                 // lowest sequence wins
+
+        // Watch ONLY the predecessor — avoids the herd effect where one
+        // departure wakes every waiter.
+        String pred = kids.get(i - 1);
+        CountDownLatch latch = new CountDownLatch(1);
+        Stat exists = zk.checkExists()
+                .usingWatcher((CuratorWatcher) e -> latch.countDown())
+                .forPath(path + "/" + pred);
+
+        if (exists != null) latch.await();
+        // predecessor gone → loop and re-check whether I'm now lowest
+    }
+}
+```
+
+</details>
+
+
 Ephemeral = the znode vanishes when the creator's session ends (crash/timeout) → automatic failover. Watching only the predecessor means one death wakes exactly one node, not all N.
 
 **Recipe 2 — Lease + fencing token (etcd/lock-service style, storage-agnostic sketch):**
@@ -863,6 +1073,24 @@ def sizing(n):
 sizing(3)   # quorum 2, tolerates 1
 sizing(5)   # quorum 3, tolerates 2
 ```
+
+<details>
+<summary>☕ <b>Java</b> — a record instead of an untyped dict</summary>
+
+```java
+record Sizing(int quorum, int tolerates) {}
+
+Sizing sizing(int n) {
+    int q = n / 2 + 1;
+    return new Sizing(q, n - q);
+}
+
+sizing(3);   // quorum 2, tolerates 1
+sizing(5);   // quorum 3, tolerates 2
+```
+
+</details>
+
 
 **Why odd:** each jump from odd N to the next even N raises the quorum (slower writes, more to coordinate) without improving fault tolerance. Always pick 3, 5, or 7.
 

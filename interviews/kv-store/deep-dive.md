@@ -145,6 +145,34 @@ def preference_list(key, ring, N, distinct="physical"):
     return out            # [primary, replica2, replica3, ...]
 ```
 
+<details>
+<summary>☕ <b>Java</b> — enum instead of a magic string</summary>
+
+```java
+enum FaultDomain { PHYSICAL, RACK }
+
+List<Node> preferenceList(String key, Ring ring, int n, FaultDomain distinct) {
+    int pos = hash(key);
+    List<Node> out = new ArrayList<>();
+    Set<String> seen = new HashSet<>();
+
+    int idx = ring.firstIndexClockwiseFrom(pos);
+    while (out.size() < n) {
+        Node node = ring.nodeAt(idx);
+        String domain = (distinct == FaultDomain.PHYSICAL) ? node.machine() : node.rack();
+
+        if (seen.add(domain)) {            // skip same machine (in prod: same rack/DC)
+            out.add(node);
+        }
+        idx = (idx + 1) % ring.size();
+    }
+    return out;                            // [primary, replica2, replica3, ...]
+}
+```
+
+</details>
+
+
 Synchronous vs asynchronous replication is really just the **W** dial (Section 4): `W=1` acks after the coordinator's local write and replicates the rest lazily; `W=N` waits for every copy.
 
 | W setting | Behaves like | Durability on ack | Write latency |
@@ -422,6 +450,29 @@ def gossip(self):
                 self.view[node] = state             # keep the newer view
 # A change reaches all N nodes in ~O(log_3 N) rounds.
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Map.merge expresses "keep the newer view" directly</summary>
+
+```java
+// Gossip round (every ~1s)
+void gossip() {
+    List<Node> peers = new ArrayList<>(knownNodes);
+    Collections.shuffle(peers);
+
+    for (Node peer : peers.subList(0, Math.min(3, peers.size()))) {
+        // swap membership + heartbeat counters
+        Map<Node, NodeState> theirs = peer.exchange(view);
+
+        theirs.forEach((node, state) -> view.merge(node, state,
+                (mine, yours) -> yours.heartbeat() > mine.heartbeat() ? yours : mine));
+    }
+}
+// A change reaches all N nodes in ~O(log₃ N) rounds.
+```
+
+</details>
+
 
 ```
 Phi accrual failure detector:

@@ -130,6 +130,30 @@ class ShardRouter:
         return shard
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Math.floorMod — % on a negative hash gives a negative index</summary>
+
+```java
+// Hash-based sharding — Guava's Murmur3
+int getShard(String userId, int numShards) {
+    HashCode hash = Hashing.murmur3_32_fixed().hashString(userId, UTF_8);
+    return Math.floorMod(hash.asInt(), numShards);   // floorMod: never negative
+}
+
+// Directory-based sharding
+class ShardRouter {
+    private final DirectoryClient directory;   // Redis, ZooKeeper, etc.
+
+    String getShard(String userId) {
+        String shard = directory.get("user_shard:" + userId);
+        return (shard != null) ? shard : assignNewShard(userId);
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Pinterest's Sharding Evolution
@@ -339,6 +363,31 @@ total_pending = await scatter_gather_count(
 )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — orTimeout bounds the tail the Python version leaves open</summary>
+
+```java
+// Scatter: fire at every shard in parallel. Gather: aggregate.
+long scatterGatherCount(String query, List<Shard> shards) {
+    List<CompletableFuture<Long>> futures = shards.stream()
+            .map(shard -> CompletableFuture.supplyAsync(
+                    () -> shard.executeCount(query), pool))
+            .toList();
+
+    // Bound the whole fan-out — p99 is the SLOWEST shard, not the average.
+    return futures.stream()
+            .mapToLong(f -> f.orTimeout(200, TimeUnit.MILLISECONDS).join())
+            .sum();
+}
+
+long totalPending = scatterGatherCount(
+        "SELECT COUNT(*) AS count FROM orders WHERE status = 'pending'",
+        allShards);
+```
+
+</details>
+
+
 | Operation | Single-Shard | Cross-Shard |
 |---|---|---|
 | Latency | Single DB round-trip | Max(all shard latencies) + coordination |
@@ -424,6 +473,32 @@ def read_all_for_user(user_id: str, salt_factor: int = 10) -> List:
         results.extend(shard.query(user_id))
     return results
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note reads pay the salt cost on every lookup</summary>
+
+```java
+// Salted sharding for hot keys
+int getShardSalted(String userId, int numShards, int saltFactor) {
+    int salt = ThreadLocalRandom.current().nextInt(saltFactor);
+    String compositeKey = userId + ":" + salt;
+    return Math.floorMod(murmur3(compositeKey), numShards);
+}
+
+// The cost: reads now scatter across every salt.
+List<Row> readAllForUser(String userId, int numShards, int saltFactor) {
+    return IntStream.range(0, saltFactor)
+            .mapToObj(salt -> Math.floorMod(murmur3(userId + ":" + salt), numShards))
+            .distinct()
+            .flatMap(shardId -> shards.get(shardId).query(userId).stream())
+            .toList();
+}
+// Write throughput ×saltFactor, read cost ×saltFactor. Only worth it for
+// keys you KNOW are hot.
+```
+
+</details>
+
 
 ---
 
@@ -525,6 +600,49 @@ class MigrationRouter:
         elif self.phase == 'cutover':
             return self.new_shards.read(key)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — exhaustive switch; volatile phase</summary>
+
+```java
+class MigrationRouter {
+    enum Phase { DOUBLE_WRITE, BACKFILL, SHADOW, CUTOVER }
+
+    private volatile Phase phase;
+
+    void routeWrite(String key, Object data) {
+        switch (phase) {
+            case DOUBLE_WRITE, BACKFILL, SHADOW -> {
+                oldShards.write(key, data);
+                newShards.write(key, data);
+            }
+            case CUTOVER -> newShards.write(key, data);
+        }
+    }
+
+    Object routeRead(String key) {
+        return switch (phase) {
+            case DOUBLE_WRITE, BACKFILL -> oldShards.read(key);
+
+            case SHADOW -> {
+                Object oldResult = oldShards.read(key);
+                Object newResult = newShards.read(key);
+                if (!Objects.equals(oldResult, newResult)) {
+                    logDiff(key, oldResult, newResult);   // the verify step
+                }
+                yield oldResult;                          // old is still truth
+            }
+
+            case CUTOVER -> newShards.read(key);
+        };
+    }
+}
+// SHADOW is the step people skip. Silent divergence found after cutover
+// has no clean rollback.
+```
+
+</details>
+
 
 ---
 

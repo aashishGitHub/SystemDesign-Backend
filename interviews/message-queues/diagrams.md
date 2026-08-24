@@ -61,7 +61,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The producer-side trap is the dual-write problem.
+2. Choose the delivery model by shape: a queue distributes work, a topic broadcasts.
+3. Durability is replication: RF=3 with min-ISR 2 means an ack implies quorum.
+4. Partitions are the ordering unit and the parallelism ceiling.
+5. When you commit the offset decides your failure mode.
+6. Exactly-once delivery is impossible. Build at-least-once plus an idempotent consumer.
+7. A poison message must not retry forever: bounded retries, then a dead-letter queue.
+8. Consumer lag is the metric. Distinguish a backlog from a *growing* backlog.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The first red box is the producer-side trap: the dual-write problem.** Writing the order to your database and publishing the event are two separate systems, and no ordering of the two is atomic — crash in between and they diverge permanently. The fix is a **transactional outbox**: insert the event into an outbox table *in the same local transaction* as the business write, and let a relay publish it. Or tail the write-ahead log with CDC and never dual-write at all.
 2. **Choose the delivery model by shape:** a point-to-point queue distributes work (each message to exactly one consumer), a pub-sub topic broadcasts (each message to every subscriber). Kafka is a *commit log* — replay and per-key ordering; RabbitMQ is a traditional broker — rich routing and per-message acks. Say which property you need.

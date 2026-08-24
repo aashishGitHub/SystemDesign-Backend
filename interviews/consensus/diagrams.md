@@ -58,7 +58,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Collapse four requirements into one primitive: agree on the next log entry.
+2. Name the failure this exists to prevent — split-brain.
+3. Explain Raft's three mechanisms rather than reciting Paxos phases.
+4. The whole safety argument in one line: any two majorities intersect.
+5. An entry is committed once it's on a majority. Only then ack the client.
+6. The theoretical boundary is FLP: no async algorithm guarantees safety and termination.
+7. A lease alone is not enough. You need a fencing token.
+8. Consensus belongs on the small critical metadata, never on the data path.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Collapse four requirements into one primitive.** Leader election, distributed locks, config storage and membership are not four problems — they are all "agree on the next entry in an ordered log." That's the replicated state machine model: identical initial state plus identical commands in identical order yields identical replicas. Agreeing on *log entries* is a clean consensus problem; agreeing on *state* is not.
 2. **The first red box: name the failure this exists to prevent — split-brain.** Two nodes each believing they are leader accept conflicting writes, and for a control plane there is no safe automatic merge afterwards. Say why the obvious alternatives fail: a single coordinator is a SPOF *and* cannot distinguish a frozen node (GC pause) from a dead one; a boolean `is_leader` row in a database has no mechanism to stop two writers during a partition.

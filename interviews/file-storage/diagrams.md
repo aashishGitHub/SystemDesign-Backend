@@ -66,7 +66,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The metadata API never touches file bytes. Say this early.
+2. Metadata is the mutable half. A file is its manifest of chunk hashes.
+3. Permissions inherit from the parent folder, but are materialized.
+4. Chunking happens on the client: ~4 MB chunks, each hashed.
+5. Ask which hashes the server already has, so one movie is stored once.
+6. Chunks are stored by hash — immutable and content-addressed.
+7. Deletion is reference-counted, collected at zero after a grace period.
+8. Sync is a cursor, never a scan.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The metadata API never touches file bytes.** Say this early — it's the difference between a design that scales to 500 PB and one where your app servers are a bandwidth bottleneck. Clients get a presigned URL and upload straight to object storage.
 2. **Metadata is the mutable half**: names, folder tree, versions, and the **manifest** — an ordered list of chunk hashes. A file *is* its manifest; the bytes are interchangeable.

@@ -514,7 +514,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧ — say it while your hand draws that box)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The waiting room is the front door, and it is stateless at the edge.
+2. Admission is a thermostat, not a constant.
+3. A hold is not a booking, and it is not a lock.
+4. Payment is outside the transaction, so this is a saga.
+5. This red diamond is the entire answer to "how do you prevent overbooking".
+6. The nastiest race: the TTL fires the millisecond the charge succeeds.
+7. The ticket is a downstream projection, never part of the payment transaction.
+8. Everything after the commit is an event, so a spike becomes a backlog.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The waiting room is the front door, and it is stateless at the edge** — because it must survive exactly the load my service cannot. 150K fans get a *signed* position token (they can display it, never assert it), bots are filtered **here**, before inventory, which is the 2022 lesson. CloudFront + WAF Bot Control; positions from an ElastiCache `INCR` or sorted set.
 2. **Admission is a thermostat, not a constant.** I admit at the rate the inventory tier can absorb — AIMD on inventory p99, DB pool utilization and error rate, holding the database near 60–70%. *The inventory tier is capacity-planned for the admitted rate, never the arrival rate.* That one sentence is the whole scene.

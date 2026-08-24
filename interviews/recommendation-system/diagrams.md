@@ -63,7 +63,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The write path acknowledges and gets out of the way.
+2. Profiles update incrementally with an exponential moving average — O(1) per event.
+3. Embeddings come from two places: content at upload, behaviour from interactions.
+4. The funnel's cheap half: approximate nearest-neighbour candidate generation, via HNSW.
+5. The expensive half: learning-to-rank over a few hundred candidates.
+6. Re-rank for diversity and reserve an exploration budget, or you get a filter bubble.
+7. Serving is cache-first, because your p99 budget is spent almost entirely here.
+8. Cold start is two unrelated problems with two answers.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The write path acknowledges and gets out of the way.** Hundreds of thousands of events/second land on a stream; nothing about a click should block on model work.
 2. **Profiles update incrementally with an exponential moving average — O(1) per event.** Say the alternative and why it loses: recomputing a user vector from history is O(n) and lands you in batch-latency territory, where "recommendations reflect recent behaviour within seconds" is impossible. You trade a little accuracy for a lot of freshness.

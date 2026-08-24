@@ -182,6 +182,31 @@ def preference_list(key, ring, N):
 # key "user:42", N=3  →  [NodeA, NodeD, NodeF]
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Set.add() returns false on duplicate — no separate contains check</summary>
+
+```java
+List<Node> preferenceList(String key, Ring ring, int n) {
+    int pos = hash(key);
+    List<Node> result = new ArrayList<>();
+    Set<Node> seenPhysical = new HashSet<>();
+
+    int idx = ring.firstIndexClockwiseFrom(pos);
+    while (result.size() < n) {
+        Node node = ring.physicalNodeAt(idx);
+        if (seenPhysical.add(node)) {      // add() returns false if already present
+            result.add(node);              // skip vnodes of a machine already included
+        }
+        idx = (idx + 1) % ring.size();
+    }
+    return result;
+}
+// key "user:42", N=3  →  [NodeA, NodeD, NodeF]
+```
+
+</details>
+
+
 **Why skip same-machine vnodes:** if NodeA owns 256 vnodes, the next few clockwise positions may all be NodeA. Counting them would put "3 replicas" on 1 physical box — zero fault tolerance. Skipping guarantees N *distinct machines*. Production preference lists also skip to distinct *racks/datacenters* (A11).
 
 **Real systems:** This is the Dynamo paper's preference list; Cassandra implements the same idea via replication strategy walking the token ring and skipping to distinct racks/DCs.

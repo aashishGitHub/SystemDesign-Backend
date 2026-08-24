@@ -74,6 +74,37 @@ def upload_large_file(file_path):
     api.post(f"/upload/{session.id}/complete")
 ```
 
+<details>
+<summary>☕ <b>Java</b> — FileChannel streams — never Files.readAllBytes on a large file</summary>
+
+```java
+// Client-side
+void uploadLargeFile(Path filePath) throws IOException {
+    long size = Files.size(filePath);
+    int  chunkSize = 4 * 1024 * 1024;                 // 4 MB
+
+    // 1. Initialize upload session
+    UploadSession session = api.post("/upload/init",
+            new InitRequest(filePath.getFileName().toString(), size, chunkSize));
+
+    // 2. Upload chunks — resumable, skip what already landed
+    try (FileChannel channel = FileChannel.open(filePath, READ)) {
+        ByteBuffer buf = ByteBuffer.allocate(chunkSize);
+        for (int i = 0; channel.read(buf) > 0; i++, buf.clear()) {
+            if (session.chunkUploaded(i)) continue;   // resume
+            buf.flip();
+            api.put(session.chunkUploadUrl(i), buf);
+        }
+    }
+
+    // 3. Finalize
+    api.post("/upload/" + session.id() + "/complete");
+}
+```
+
+</details>
+
+
 Server tracks which chunks arrived. Client remembers last uploaded chunk index. After network failure, client queries server for missing chunks and resumes.
 
 ---
@@ -149,6 +180,31 @@ presigned_url = s3.generate_presigned_url(
 # PUT https://my-bucket.s3.amazonaws.com/chunk-abc123?X-Amz-Signature=...
 ```
 
+<details>
+<summary>☕ <b>Java</b> — AWS SDK v2</summary>
+
+```java
+// AWS SDK v2 presigner
+S3Presigner presigner = S3Presigner.create();
+
+PutObjectRequest putReq = PutObjectRequest.builder()
+        .bucket("my-bucket")
+        .key("chunk-abc123")
+        .build();
+
+PutObjectPresignRequest presignReq = PutObjectPresignRequest.builder()
+        .signatureDuration(Duration.ofHours(1))
+        .putObjectRequest(putReq)
+        .build();
+
+String presignedUrl = presigner.presignPutObject(presignReq).url().toString();
+
+// The client PUTs directly to this URL — bytes never touch our servers.
+```
+
+</details>
+
+
 **Why presigned URLs?**
 - API servers don't proxy gigabytes of data
 - Reduces API server load by 99%
@@ -193,6 +249,48 @@ def complete_upload(session_id: str, client_chunk_hashes: list[str]):
     )
     db.save(version)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note .equals — == on Strings would be a real bug here</summary>
+
+```java
+record UploadSession(String sessionId,
+                     String userId,
+                     String fileName,
+                     long   totalSize,
+                     int    chunkSize,
+                     int    expectedChunkCount,
+                     Set<Integer> chunksReceived,
+                     Map<Integer, String> chunkHashes,
+                     Instant createdAt,
+                     Instant expiresAt) {}     // expiry cleans up abandoned uploads
+
+void completeUpload(String sessionId, List<String> clientChunkHashes) {
+    UploadSession session = getSession(sessionId);
+
+    // Verify all chunks arrived
+    if (session.chunksReceived().size() != session.expectedChunkCount()) {
+        throw new MissingChunksError(missingIndices(session));
+    }
+
+    // Verify hashes match (client-computed vs server-computed)
+    for (int i = 0; i < clientChunkHashes.size(); i++) {
+        if (!session.chunkHashes().get(i).equals(clientChunkHashes.get(i))) {
+            throw new ChunkIntegrityError(i);
+        }
+    }
+
+    // A file IS its manifest of chunk hashes.
+    List<String> manifest = IntStream.range(0, session.expectedChunkCount())
+            .mapToObj(session.chunkHashes()::get)
+            .toList();
+
+    db.save(new FileVersion(session.fileId(), manifest));
+}
+```
+
+</details>
+
 
 The `chunk_manifest` is an ordered list of chunk hashes. Download reverses this — fetch chunks in order and concatenate.
 
@@ -248,6 +346,39 @@ def verify_chunk(chunk_key, expected_hash):
         raise CorruptionError()
 ```
 
+<details>
+<summary>☕ <b>Java</b> — HexFormat (Java 17+) replaces manual hex encoding</summary>
+
+```java
+// Client side
+String uploadChunk(byte[] chunkBytes) throws Exception {
+    MessageDigest sha = MessageDigest.getInstance("SHA-256");
+    String expectedHash = HexFormat.of().formatHex(sha.digest(chunkBytes));
+
+    HttpRequest request = HttpRequest.newBuilder(URI.create(presignedUrl))
+            .header("Content-MD5", base64Md5(chunkBytes))          // S3 built-in check
+            .header("x-amz-checksum-sha256", expectedHash)
+            .PUT(HttpRequest.BodyPublishers.ofByteArray(chunkBytes))
+            .build();
+
+    httpClient.send(request, BodyHandlers.discarding());
+    return expectedHash;
+}
+
+// Server side (finalize)
+void verifyChunk(String chunkKey, String expectedHash) {
+    HeadObjectResponse head = s3.headObject(HeadObjectRequest.builder()
+            .bucket(BUCKET).key(chunkKey).build());
+
+    if (!expectedHash.equals(head.checksumSHA256())) {
+        throw new CorruptionError(chunkKey);
+    }
+}
+```
+
+</details>
+
+
 S3's `Content-MD5` header provides transport-level integrity. Your application-level SHA-256 provides end-to-end integrity.
 
 ---
@@ -272,6 +403,34 @@ def store_chunk(chunk_bytes: bytes) -> str:
     
     return chunk_hash
 ```
+
+<details>
+<summary>☕ <b>Java</b> — the UPDATE-first form avoids a check-then-act race</summary>
+
+```java
+String storeChunk(byte[] chunkBytes) throws Exception {
+    MessageDigest sha = MessageDigest.getInstance("SHA-256");
+    String chunkHash = HexFormat.of().formatHex(sha.digest(chunkBytes));
+
+    // Already stored? Just take another reference — this is the dedup win.
+    int updated = jdbc.update(
+            "UPDATE chunks SET ref_count = ref_count + 1 WHERE hash = ?", chunkHash);
+
+    if (updated > 0) {
+        return chunkHash;                       // Skip upload entirely
+    }
+
+    // New unique chunk — upload, then record with ref_count = 1
+    s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(chunkHash).build(),
+                 RequestBody.fromBytes(chunkBytes));
+    jdbc.update("INSERT INTO chunks (hash, ref_count) VALUES (?, 1)", chunkHash);
+
+    return chunkHash;
+}
+```
+
+</details>
+
 
 Two users uploading the same 4 GB movie both produce the same hash. Server stores one copy. Both users' file metadata points to the same chunks.
 
@@ -358,6 +517,45 @@ def cdc_chunk(data: bytes, avg_chunk_size=4*1024*1024):
     return chunks
 ```
 
+<details>
+<summary>☕ <b>Java</b> — and it keeps the trailing chunk the Python version drops</summary>
+
+```java
+/**
+ * Content-defined chunking. Boundaries follow the CONTENT, so inserting a
+ * byte at the front shifts one chunk, not every chunk after it.
+ */
+List<byte[]> cdcChunk(byte[] data, int avgChunkSize) {
+    int windowSize = 48;
+    int minChunk   = avgChunkSize / 4;
+    int maxChunk   = avgChunkSize * 4;
+    int mask       = (1 << 22) - 1;             // tune for average size
+
+    List<byte[]> chunks = new ArrayList<>();
+    int chunkStart = 0;
+
+    for (int i = windowSize; i < data.length; i++) {
+        long rollingHash = rabinFingerprint(data, i - windowSize, i);
+        int  chunkLen    = i - chunkStart;
+
+        boolean naturalBoundary = chunkLen >= minChunk && (rollingHash & mask) == 0;
+        boolean forcedBoundary  = chunkLen >= maxChunk;
+
+        if (naturalBoundary || forcedBoundary) {
+            chunks.add(Arrays.copyOfRange(data, chunkStart, i));
+            chunkStart = i;
+        }
+    }
+    if (chunkStart < data.length) {
+        chunks.add(Arrays.copyOfRange(data, chunkStart, data.length));  // tail
+    }
+    return chunks;
+}
+```
+
+</details>
+
+
 **Result**: Insert 10 bytes → only 1-2 chunks change (local disruption, not global).
 
 Dropbox, Restic, and Borg backup use this technique.
@@ -400,6 +598,50 @@ class ChunkGarbageCollector:
             s3.delete_object(Bucket=BUCKET, Key=chunk_hash)
             db.execute("DELETE FROM chunks WHERE hash = ?", chunk_hash)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same two-phase delete</summary>
+
+```java
+class ChunkGarbageCollector {
+
+    void decrementReference(String chunkHash) {
+        // Atomic decrement + read in one statement.
+        Integer refCount = jdbc.queryForObject("""
+                UPDATE chunks SET ref_count = ref_count - 1
+                WHERE hash = ?
+                RETURNING ref_count
+                """, Integer.class, chunkHash);
+
+        if (refCount != null && refCount == 0) {
+            scheduleDeletion(chunkHash, Duration.ofHours(24));   // delayed, never immediate
+        }
+    }
+
+    /**
+     * Never delete immediately. An upload racing the ref-count update, or a
+     * restore from backup, can resurrect a chunk that looked orphaned.
+     */
+    void scheduleDeletion(String chunkHash, Duration delay) {
+        queue.send(new DeleteChunkJob(chunkHash, Instant.now().plus(delay)));
+    }
+
+    void processDeletion(String chunkHash) {
+        // Re-check before deleting — the grace period exists for a reason.
+        Integer refCount = jdbc.queryForObject(
+                "SELECT ref_count FROM chunks WHERE hash = ?", Integer.class, chunkHash);
+
+        if (refCount != null && refCount == 0) {
+            s3.deleteObject(DeleteObjectRequest.builder()
+                    .bucket(BUCKET).key(chunkHash).build());
+            jdbc.update("DELETE FROM chunks WHERE hash = ?", chunkHash);
+        }
+    }
+}
+```
+
+</details>
+
 
 **What can go wrong**:
 - Race condition: File upload increments ref_count while GC process reads 0
@@ -484,6 +726,42 @@ async def get_sync_changes(
     }
 ```
 
+<details>
+<summary>☕ <b>Java</b> — one query handles both the initial and incremental case</summary>
+
+```java
+@GetMapping("/sync/changes")
+SyncResponse getSyncChanges(
+        @RequestParam(required = false) String cursor,
+        @RequestParam(defaultValue = "100") int limit,
+        @AuthenticationPrincipal User user) {
+
+    limit = Math.min(limit, 1000);
+
+    // A cursor names a POSITION in the event log. Never an offset.
+    long cursorSeq = (cursor == null) ? -1 : decodeCursor(cursor);
+
+    List<SyncEvent> changes = jdbc.query("""
+            SELECT * FROM sync_events
+            WHERE user_id = ? AND sequence_id > ?
+            ORDER BY sequence_id ASC
+            LIMIT ?
+            """, syncEventMapper, user.id(), cursorSeq, limit);
+
+    String nextCursor = changes.isEmpty()
+            ? cursor
+            : encodeCursor(changes.get(changes.size() - 1).sequenceId());
+
+    return new SyncResponse(
+            changes.stream().map(ChangeDto::from).toList(),
+            nextCursor,
+            changes.size() == limit);      // has_more
+}
+```
+
+</details>
+
+
 ---
 
 ### A18. Desktop File System Monitoring
@@ -515,6 +793,40 @@ class SyncHandler(FileSystemEventHandler):
 # Solution: Detect directory move, treat as single operation
 ```
 
+<details>
+<summary>☕ <b>Java</b> — WatchService — and the two places it differs from watchdog</summary>
+
+```java
+// java.nio.file.WatchService is the JDK's built-in equivalent of watchdog.
+WatchService watcher = FileSystems.getDefault().newWatchService();
+syncRoot.register(watcher, ENTRY_CREATE, ENTRY_MODIFY, ENTRY_DELETE);
+
+while (true) {
+    WatchKey key = watcher.take();                 // blocks
+
+    for (WatchEvent<?> event : key.pollEvents()) {
+        Path path = syncRoot.resolve((Path) event.context());
+
+        if (event.kind() == ENTRY_CREATE) {
+            syncQueue.put(new Change("create", path));
+        } else if (event.kind() == ENTRY_MODIFY) {
+            debounceAndQueue(path);                // editors save several times
+        } else if (event.kind() == ENTRY_DELETE) {
+            syncQueue.put(new Change("delete", path));
+        }
+    }
+    key.reset();
+}
+// Two JDK caveats worth naming: WatchService has NO native rename event
+// (you get delete + create and must pair them), and it is not recursive —
+// you register every subdirectory yourself.
+// Pitfall either way: a large folder move generates thousands of events.
+// Detect the directory move and treat it as ONE operation.
+```
+
+</details>
+
+
 ---
 
 ### A19. Handling Long-Offline Clients
@@ -536,6 +848,34 @@ async def sync_long_offline_client(user_id: str, last_cursor: str):
         yield batch
         await asyncio.sleep(0.1)  # Rate limit
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same delta-vs-full-resync decision</summary>
+
+```java
+void syncLongOfflineClient(String userId, String lastCursor, Consumer<Batch> sink) {
+    Long eventCount = jdbc.queryForObject("""
+            SELECT COUNT(*) FROM sync_events
+            WHERE user_id = ? AND sequence_id > ?
+            """, Long.class, userId, decodeCursor(lastCursor));
+
+    if (eventCount != null && eventCount > 10_000) {
+        // Replaying 10K deltas costs more than sending current state.
+        sink.accept(Batch.fullResync());
+        return;
+    }
+
+    // Stream changes in batches, rate-limited so one client can't
+    // monopolize the sync tier.
+    streamChanges(userId, lastCursor, 500).forEach(batch -> {
+        sink.accept(batch);
+        sleepQuietly(Duration.ofMillis(100));
+    });
+}
+```
+
+</details>
+
 
 **Backoff strategy**:
 - First sync: 100 changes per request
@@ -636,6 +976,45 @@ async def check_permission(user_id: str, file_id: str, required: str) -> bool:
     return permission_level_allows(direct, required)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — caching the negative result too — the Python version doesn't</summary>
+
+```java
+boolean checkPermission(String userId, String fileId, Permission required) {
+    // 1. Cache first — permission checks are on every single request.
+    String cacheKey = "perm:" + userId + ":" + fileId;
+    String cached = jedis.get(cacheKey);
+    if (cached != null) {
+        return Permission.valueOf(cached).allows(required);
+    }
+
+    // 2. Direct grant on the file itself
+    Optional<Permission> direct = jdbc.query("""
+            SELECT permission_level FROM share_permissions
+            WHERE resource_id = ? AND grantee_id = ?
+            """, permissionMapper, fileId, userId).stream().findFirst();
+
+    Permission effective = direct.orElse(null);
+
+    // 3. Otherwise walk up the folder tree
+    if (effective == null) {
+        String folderId = getParentFolder(fileId);
+        while (folderId != null && effective == null) {
+            effective = lookupDirect(folderId, userId).orElse(null);
+            folderId  = getParentFolder(folderId);
+        }
+    }
+
+    // 4. Cache the answer — including "none", or misses re-walk the tree.
+    jedis.setex(cacheKey, 300, (effective == null ? Permission.NONE : effective).name());
+
+    return effective != null && effective.allows(required);
+}
+```
+
+</details>
+
+
 ---
 
 ### A22. Permission Inheritance
@@ -698,6 +1077,45 @@ def revoke_link(token: str):
     # Invalidate CDN cache for this token
     cdn.purge(f"/share/{token}")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — SecureRandom, not Random — this token is a credential</summary>
+
+```java
+String createShareableLink(String fileId, Permission level) {
+    // 256 bits of entropy from a CSPRNG — never Random or UUID.randomUUID
+    // for anything that acts as a bearer credential.
+    byte[] raw = new byte[32];
+    SecureRandom.getInstanceStrong().nextBytes(raw);
+    String token = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+
+    db.insert(new SharePermission(fileId, GranteeType.ANYONE_WITH_LINK,
+                                  level, token, Instant.now()));
+
+    return "https://drive.example.com/share/" + token;
+}
+
+FileMetadata accessViaLink(String token) {
+    SharePermission permission = jdbc.query("""
+            SELECT * FROM share_permissions
+            WHERE share_token = ? AND grantee_type = 'anyone_with_link'
+            """, permMapper, token).stream().findFirst()
+            .orElseThrow(AccessDeniedException::new);
+
+    if (permission.revokedAt() != null) throw new AccessDeniedException();
+
+    return getFileMetadata(permission.resourceId());
+}
+
+void revokeLink(String token) {
+    jdbc.update("UPDATE share_permissions SET revoked_at = NOW() WHERE share_token = ?",
+                token);
+    cdn.purge("/share/" + token);      // the link may be cached at the edge
+}
+```
+
+</details>
+
 
 ---
 
@@ -829,6 +1247,44 @@ async def commit_changes(changes: list[LocalChange]) -> CommitResult:
     return {"results": results, "new_cursor": generate_cursor()}
 ```
 
+<details>
+<summary>☕ <b>Java</b> — per-change try/catch: one bad change can't fail the batch</summary>
+
+```java
+@PostMapping("/sync/commit")
+CommitResult commitChanges(@RequestBody List<LocalChange> changes) {
+    List<ChangeResult> results = new ArrayList<>();
+
+    for (LocalChange change : changes) {
+        try {
+            switch (change.type()) {
+                case CREATE -> {
+                    FileRecord serverFile = db.getFileByPath(change.path());
+                    results.add(serverFile != null
+                            ? ChangeResult.conflict(change.id(), serverFile.version())
+                            : ChangeResult.accepted(change.id(), createFile(change).version()));
+                }
+                case MODIFY -> {
+                    FileRecord serverFile = db.getFile(change.fileId());
+                    // Optimistic concurrency: the client's base version must
+                    // still be current, or somebody edited underneath it.
+                    results.add(serverFile.version() != change.baseVersion()
+                            ? ChangeResult.conflict(change.id(), serverFile.version())
+                            : ChangeResult.accepted(change.id(), updateFile(change).version()));
+                }
+                case DELETE -> results.add(deleteFile(change));
+            }
+        } catch (Exception e) {
+            results.add(ChangeResult.error(change.id(), e.getMessage()));
+        }
+    }
+    return new CommitResult(results, generateCursor());
+}
+```
+
+</details>
+
+
 ---
 
 ### A28. Files On-Demand (Placeholder Files)
@@ -920,6 +1376,42 @@ class SmartSyncPolicy:
             freed += file.size_bytes
 ```
 
+<details>
+<summary>☕ <b>Java</b> — note the L suffix — 5_000_000_000 overflows an int</summary>
+
+```java
+class SmartSyncPolicy {
+
+    boolean shouldKeepLocal(FileMetadata file, Device device) {
+        if (file.lastAccessedAt().isAfter(Instant.now().minus(Duration.ofDays(7)))) {
+            return true;                                  // Recent — always keep
+        }
+        if (file.pinned())                    return true;    // User asked
+        if (file.sizeBytes() < 1_000_000)     return true;    // Small — cheap to keep
+
+        // Under space pressure, stop keeping cold large files.
+        return device.freeSpaceBytes() >= 5_000_000_000L;     // 5 GB
+    }
+
+    void evictToFreeSpace(Device device, long neededBytes) {
+        // Evict least recently accessed first, never anything pinned.
+        List<FileMetadata> candidates = getLocalFiles(device, false).stream()
+                .sorted(Comparator.comparing(FileMetadata::lastAccessedAt))
+                .toList();
+
+        long freed = 0;
+        for (FileMetadata file : candidates) {
+            if (freed >= neededBytes) break;
+            evictLocalCopy(file);          // Keep the placeholder, drop the content
+            freed += file.sizeBytes();
+        }
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ## Level 7 — Scale & Performance
@@ -970,6 +1462,48 @@ class ChunkGarbageCollector:
 schedule.every().day.at("03:00").do(gc.mark_phase)
 schedule.every().day.at("04:00").do(gc.sweep_phase)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same mark/sweep</summary>
+
+```java
+/**
+ * Two-phase garbage collection:
+ *   1. Mark  — find chunks with ref_count = 0
+ *   2. Sweep — delete only after a grace period
+ */
+class ChunkGarbageCollector {
+
+    void markPhase() {
+        jdbc.update("""
+                UPDATE chunks
+                SET deletion_scheduled_at = NOW() + INTERVAL '7 days'
+                WHERE ref_count = 0 AND deletion_scheduled_at IS NULL
+                """);
+    }
+
+    void sweepPhase() {
+        List<String> toDelete = jdbc.queryForList("""
+                SELECT chunk_hash FROM chunks
+                WHERE deletion_scheduled_at < NOW()
+                  AND ref_count = 0        -- re-check: it may have been resurrected
+                """, String.class);
+
+        for (String hash : toDelete) {
+            if (countReferences(hash) != 0) continue;    // raced with an upload
+            s3.deleteObject(DeleteObjectRequest.builder().bucket(BUCKET).key(hash).build());
+            jdbc.update("DELETE FROM chunks WHERE hash = ?", hash);
+        }
+    }
+}
+
+// Run nightly — Spring's cron, or a ScheduledExecutorService.
+// @Scheduled(cron = "0 0 3 * * *")  markPhase
+// @Scheduled(cron = "0 0 4 * * *")  sweepPhase
+```
+
+</details>
+
 
 ---
 
@@ -1051,6 +1585,48 @@ def lambda_handler(event, context):
         finalize_chunk(key, computed_hash)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — DigestInputStream hashes while streaming — constant memory</summary>
+
+```java
+// AWS Lambda triggered on S3 upload
+public class VerifyChunkHandler implements RequestHandler<S3Event, Void> {
+
+    @Override
+    public Void handleRequest(S3Event event, Context context) {
+        S3EventNotificationRecord record = event.getRecords().get(0);
+        String bucket = record.getS3().getBucket().getName();
+        String key    = record.getS3().getObject().getKey();
+
+        // Stream the hash — never load a whole chunk into heap.
+        String computedHash;
+        try (InputStream in = s3.getObject(GetObjectRequest.builder()
+                .bucket(bucket).key(key).build());
+             DigestInputStream dis = new DigestInputStream(
+                     in, MessageDigest.getInstance("SHA-256"))) {
+
+            dis.transferTo(OutputStream.nullOutputStream());   // drain
+            computedHash = HexFormat.of().formatHex(dis.getMessageDigest().digest());
+
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        UploadSession session = getUploadSession(key);
+        if (!session.expectedHash().equals(computedHash)) {
+            s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+            notifyClient(session.userId(), "Upload failed: corruption detected");
+        } else {
+            finalizeChunk(key, computedHash);
+        }
+        return null;
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ### A34. Cross-Shard Permission Queries
@@ -1111,6 +1687,52 @@ class PopularFileHandler:
         cdn_url = f"https://cdn.example.com/{file_id}"
         await redis.setex(f"download_url:{file_id}", 86400, cdn_url)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — try/finally guarantees the lock is released</summary>
+
+```java
+class PopularFileHandler {
+    private static final int CACHE_TTL      = 3600;   // 1 hour
+    private static final int CACHE_LOCK_TTL = 30;     // seconds
+
+    String getDownloadUrl(String fileId) throws InterruptedException {
+        String cacheKey = "download_url:" + fileId;
+
+        String cached = jedis.get(cacheKey);
+        if (cached != null) return cached;
+
+        // Single-flight: exactly one request computes; the rest wait.
+        String lockKey = "lock:" + cacheKey;
+        String acquired = jedis.set(lockKey, "1",
+                SetParams.setParams().nx().ex(CACHE_LOCK_TTL));
+
+        if ("OK".equals(acquired)) {
+            try {
+                String url = presignDownload(fileId, Duration.ofSeconds(CACHE_TTL));
+                // Expire the cache BEFORE the URL does, or you serve dead links.
+                jedis.setex(cacheKey, CACHE_TTL - 60, url);
+                return url;
+            } finally {
+                jedis.del(lockKey);
+            }
+        }
+
+        Thread.sleep(100);                 // someone else is generating
+        return getDownloadUrl(fileId);
+    }
+
+    /** When a file goes viral (>1000 QPS). */
+    void handleViralFile(String fileId) {
+        cdn.pushToEdges("s3://" + BUCKET + "/" + fileId);
+        jedis.setex("download_url:" + fileId, 86_400,
+                    "https://cdn.example.com/" + fileId);
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -1237,6 +1859,41 @@ QUOTA_TIERS = {
 }
 ```
 
+<details>
+<summary>☕ <b>Java</b> — note 2L * TB — int arithmetic would silently overflow</summary>
+
+```java
+class QuotaEnforcer {
+
+    void checkUploadAllowed(User user, long fileSize) {
+        // Byte quota
+        if (user.storageUsedBytes() + fileSize > user.storageQuotaBytes()) {
+            throw new QuotaExceededException("storage_bytes");
+        }
+        // File count quota — often overlooked, and metadata has real cost.
+        if (user.fileCount() >= user.maxFiles()) {
+            throw new QuotaExceededException("file_count");
+        }
+        // Rate limit (uploads per hour)
+        String key = "uploads:" + user.id() + ":count";
+        long recent = jedis.incr(key);
+        if (recent == 1) jedis.expire(key, 3600);
+        if (recent > 1000) {
+            throw new RateLimitedException("Too many uploads");
+        }
+    }
+}
+
+// Example tiers
+static final Map<String, Quota> QUOTA_TIERS = Map.of(
+        "free",     new Quota(2L * GB,  10_000),
+        "pro",      new Quota(2L * TB,  500_000),
+        "business", new Quota(10L * TB, 10_000_000));
+```
+
+</details>
+
+
 ---
 
 ### A40. Live Migration Between Cloud Providers
@@ -1317,6 +1974,67 @@ class BitRotDetector:
 # Run continuously, checking 0.1% of chunks per day
 # Full corpus verification every ~3 years
 ```
+
+<details>
+<summary>☕ <b>Java</b> — typed catch — the Python bare `except:` swallows everything</summary>
+
+```java
+/**
+ * Periodic integrity verification. Reads chunks, recomputes the hash,
+ * compares against the stored one. Chunks are content-addressed, so the
+ * key IS the expected hash.
+ */
+class BitRotDetector {
+
+    boolean verifyChunk(String chunkHash) throws Exception {
+        byte[] data = s3.getObjectAsBytes(GetObjectRequest.builder()
+                .bucket(BUCKET).key(chunkHash).build()).asByteArray();
+
+        String actual = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(data));
+
+        if (!actual.equals(chunkHash)) {
+            handleCorruption(chunkHash);          // CORRUPTION DETECTED
+            return false;
+        }
+        return true;
+    }
+
+    void handleCorruption(String expectedHash) throws Exception {
+        // 1. Try to recover from a replica
+        for (String region : REPLICA_REGIONS) {
+            try {
+                byte[] replica = s3Clients.get(region).getObjectAsBytes(
+                        GetObjectRequest.builder().bucket(BUCKET)
+                                .key(expectedHash).build()).asByteArray();
+
+                String replicaHash = HexFormat.of().formatHex(
+                        MessageDigest.getInstance("SHA-256").digest(replica));
+
+                if (replicaHash.equals(expectedHash)) {
+                    s3.putObject(PutObjectRequest.builder().bucket(BUCKET)
+                            .key(expectedHash).build(), RequestBody.fromBytes(replica));
+                    metrics.increment("bit_rot.recovered");
+                    return;
+                }
+            } catch (S3Exception e) {
+                // Only catch what you mean — a bare catch here would swallow
+                // interrupts and programming errors too.
+                log.warn("replica {} unavailable for {}", region, expectedHash, e);
+            }
+        }
+
+        // 2. No good replica — the data is gone. Say so loudly.
+        markChunkUnrecoverable(expectedHash);
+        notifyAffectedUsers(expectedHash);
+        metrics.increment("bit_rot.data_loss");
+    }
+}
+// Check ~0.1% of chunks per day ⇒ full corpus verified about every 3 years.
+```
+
+</details>
+
 
 ---
 

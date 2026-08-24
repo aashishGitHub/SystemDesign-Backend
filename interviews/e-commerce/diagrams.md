@@ -492,7 +492,19 @@ flowchart TD
 
 ### The 60-second narration
 
-*(one line per numbered box — draw it in this order and say this)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. CDN and gateway first. Most traffic dies at the edge.
+2. Browse is eventual. A stale price is a blemish, not a correctness bug.
+3. Cart is availability-first — the canonical AP subsystem.
+4. Checkout is strongly consistent: a guarded conditional decrement, plus an idempotency key.
+5. The outbox: the order row and its event commit in one local transaction.
+6. Fulfillment is an async consumer, so a spike becomes a backlog.
+7. The gradient across the top: eventual → AP → strong → async.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Shopper + edge** — "CDN and gateway first; most traffic dies at the edge and never reaches an origin."
 2. **Browse (blue)** — "eventual consistency. A stale price or stock badge is a UX blemish, not a correctness bug, so this is CDN + Redis + read replicas, with search in a CDC-fed inverted index. The product body is keyed by an **immutable version**, so a price change is a new key rather than an invalidation."

@@ -59,7 +59,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Two tiers, and the invalidation order matters: L2 first, then L1.
+2. Pick the strategy from the write pattern. Cache-aside is the default.
+3. Eviction and expiry are different things, and interviewers probe it.
+4. Four named failures — knowing the names is the signal.
+5. Assign a freshness tier per datum. Staleness is a correctness decision.
+6. The database stays the source of truth. The cache is a derived view.
+7. Hit ratio is the metric. Alert on a drop, not just on errors.
+8. If the cache disappears, can the database take 100% of traffic?
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Two tiers, and the invalidation order matters.** L1 is in-process (sub-microsecond, per-node, small); L2 is the shared distributed cache. On a write you invalidate **L2 first, then L1** — the reverse order leaves a window where a node repopulates L1 from a stale L2 and pins the stale value for a full TTL.
 2. **The first red box: pick the strategy from the write pattern.** Cache-aside is the default for read-heavy data (the app owns the cache; read → miss → DB → populate). Write-through when consistency matters more than write latency. Write-back only when write throughput is critical **and** you can genuinely tolerate losing recent writes — say that cost out loud, because most candidates propose write-back without acknowledging it.

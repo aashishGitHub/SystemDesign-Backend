@@ -61,7 +61,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Debounce on the client and terminate at the edge.
+2. Cache hot prefixes — but not with LRU. Use LFU or TinyLFU admission.
+3. The key insight: a trie where each node already stores its top-K completions.
+4. Two serve-time product rules: a fast-propagating denylist, and fail soft.
+5. Now the half that separates a pass from a hire: the write path.
+6. Stable queries get a nightly batch rebuild over a rolling window.
+7. Trending queries get a streaming pipeline on a short sliding window.
+8. Deployment: build a new immutable trie and swap a pointer atomically.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Debounce on the client and terminate at the edge.** Autocomplete fires per keystroke, so the cheapest suggestion is the request you never send — then the next cheapest is one served at the edge.
 2. **Cache hot prefixes — but not with LRU.** The prefix distribution has a long tail that churns an LRU cache constantly; LFU or TinyLFU admission keeps the genuinely hot prefixes resident. Naming that is a strong signal.

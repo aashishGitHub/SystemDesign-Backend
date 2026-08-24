@@ -63,7 +63,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. The post is stored exactly once. Timelines only ever hold ids.
+2. The follow graph is an adjacency list carrying a denormalized `follower_count`.
+3. The red diamond is the whole answer: is this author above the celebrity threshold?
+4. Below the threshold: fan-out on write into each follower's timeline.
+5. Above the threshold: don't write those timelines at all. Followers pull.
+6. The read path merges the pushed timeline with the celebrity pull, then hydrates.
+7. Ranking is three stages. Deletions are lazy filters at read time.
+8. Live updates ride a push channel, with an explicit degradation ladder.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The post itself is stored exactly once** — the timeline will only ever hold *ids*. Storing post bodies per follower would multiply storage by the follower count for no benefit.
 2. **The follow graph is an adjacency list, and it carries a denormalized `follower_count`** — because that counter is what the very next decision reads.

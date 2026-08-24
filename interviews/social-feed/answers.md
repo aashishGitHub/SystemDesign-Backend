@@ -214,6 +214,28 @@ def fanout_tweet(tweet):
         redis.zremrangebyrank(f"timeline:{follower_id}", 0, -801)  # Keep last 800
 ```
 
+<details>
+<summary>☕ <b>Java</b> — pipelined so 5,000 followers isn't 10,000 round trips</summary>
+
+```java
+// Fan-out worker
+void fanoutTweet(Tweet tweet) {
+    List<String> followers = getFollowers(tweet.authorId());
+
+    // Pipeline: one round trip per batch, not two per follower.
+    Pipeline pipe = jedis.pipelined();
+    for (String followerId : followers) {
+        String key = "timeline:" + followerId;
+        pipe.zadd(key, tweet.createdAt().toEpochMilli(), tweet.id());
+        pipe.zremrangeByRank(key, 0, -801);      // Keep last 800
+    }
+    pipe.sync();
+}
+```
+
+</details>
+
+
 ---
 
 ### A13. Fan-out on read step by step
@@ -237,6 +259,22 @@ def get_feed_fan_out_read(user_id):
     all_tweets.sort(key=lambda t: t.created_at, reverse=True)
     return all_tweets[:100]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — flatMap + sorted replaces the accumulate-then-sort</summary>
+
+```java
+List<Tweet> getFeedFanOutRead(String userId) {
+    return getFollowees(userId).stream()
+            .flatMap(followeeId -> getRecentTweets(followeeId, 20).stream())
+            .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+            .limit(100)
+            .toList();
+}
+```
+
+</details>
+
 
 ---
 
@@ -283,6 +321,34 @@ def get_feed_hybrid(user_id):
     
     return all_tweets[:100]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — the push/pull asymmetry is the whole answer</summary>
+
+```java
+List<Tweet> getFeedHybrid(String userId) {
+    // 1. Pre-computed timeline (pushed tweets from non-celebrities)
+    List<String> pushedIds = new ArrayList<>(
+            jedis.zrevrange("timeline:" + userId, 0, 200));
+
+    // 2-3. Celebrities are PULLED at read time, never pushed.
+    List<Tweet> celebrityTweets = getFollowedCelebrities(userId).stream()
+            .flatMap(celebId -> getRecentTweets(celebId, 10).stream())
+            .toList();
+
+    // 4. Merge and sort
+    List<String> allIds = new ArrayList<>(pushedIds);
+    celebrityTweets.forEach(t -> allIds.add(t.id()));
+
+    return hydrateTweets(allIds).stream()
+            .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+            .limit(100)
+            .toList();
+}
+```
+
+</details>
+
 
 ---
 
@@ -341,6 +407,31 @@ def get_feed(user_id):
     return hydrate_tweets(timeline)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+List<Tweet> getFeed(String userId) {
+    Set<String> timeline = jedis.zrevrange("timeline:" + userId, 0, 100);
+
+    if (timeline.isEmpty()) {                       // Cache miss — rebuild
+        List<Tweet> tweets = getFollowees(userId).stream()
+                .limit(50)                          // Limit fan-out
+                .flatMap(id -> getRecentTweets(id, 20).stream())
+                .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+                .toList();
+
+        asyncRebuildTimeline(userId, tweets);       // Repopulate off the hot path
+        return tweets.stream().limit(100).toList();
+    }
+
+    return hydrateTweets(new ArrayList<>(timeline));
+}
+```
+
+</details>
+
+
 ---
 
 ## Level 4 — The Celebrity Problem
@@ -395,6 +486,28 @@ def classify_user(user_id):
     return "normal"  # Use push model
 ```
 
+<details>
+<summary>☕ <b>Java</b> — enum instead of stringly-typed return</summary>
+
+```java
+enum UserClass { CELEBRITY, NORMAL }
+
+UserClass classifyUser(String userId) {
+    long followerCount = getFollowerCount(userId);
+    long tweetRate     = getTweetsPerDay(userId);
+
+    // The cost that matters is followers × post rate, not followers alone.
+    long fanoutCost = followerCount * tweetRate;
+
+    return fanoutCost > THRESHOLD          // e.g. 100K fanouts/day
+            ? UserClass.CELEBRITY          // pull model
+            : UserClass.NORMAL;            // push model
+}
+```
+
+</details>
+
+
 Store classification in user metadata; recompute daily.
 
 ---
@@ -422,6 +535,31 @@ def get_celebrity_tweets(user_id):
     return tweets
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Cassandra Java driver with a prepared statement</summary>
+
+```java
+// Small set, cached per user.
+Set<String> getFollowedCelebrities(String userId) {
+    return jedis.smembers("celeb_follows:" + userId);
+}
+
+List<Tweet> getCelebrityTweets(String userId) {
+    PreparedStatement stmt = session.prepare("""
+            SELECT * FROM tweets WHERE author_id = ?
+            ORDER BY created_at DESC LIMIT 10
+            """);
+
+    return getFollowedCelebrities(userId).stream()
+            .flatMap(celebId -> session.execute(stmt.bind(celebId)).all().stream())
+            .map(Tweet::from)
+            .toList();
+}
+```
+
+</details>
+
+
 ---
 
 ### A23. Celebrity tweet deletion propagation
@@ -438,6 +576,22 @@ def hydrate_tweets(tweet_ids):
     tweets = tweet_cache.mget(tweet_ids)
     return [t for t in tweets if t and not t.deleted]  # Filter deleted
 ```
+
+<details>
+<summary>☕ <b>Java</b> — filter(Objects::nonNull) makes the null-skip explicit</summary>
+
+```java
+List<Tweet> hydrateTweets(List<String> tweetIds) {
+    // One multi-get, not N gets.
+    return tweetCache.getAll(tweetIds).values().stream()
+            .filter(Objects::nonNull)
+            .filter(t -> !t.deleted())        // Deletions applied lazily at read time
+            .toList();
+}
+```
+
+</details>
+
 
 ---
 
@@ -457,6 +611,28 @@ def handle_follower_milestone(user_id, old_count, new_count):
         # Update all followers' celeb_follows lists
         async_job(update_followers_celeb_list, user_id, "add")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+static final long CELEBRITY_THRESHOLD = 10_000;
+
+void handleFollowerMilestone(String userId, long oldCount, long newCount) {
+    boolean crossedUp = oldCount < CELEBRITY_THRESHOLD
+                     && newCount >= CELEBRITY_THRESHOLD;
+    if (!crossedUp) return;
+
+    markAsCelebrity(userId);          // stop future fan-out on write
+
+    // Existing timeline entries stay put and age out naturally.
+    // Every follower needs this author added to their celeb list.
+    asyncJob(() -> updateFollowersCelebList(userId, Op.ADD));
+}
+```
+
+</details>
+
 
 Transition is asynchronous; no immediate timeline rebuild required.
 
@@ -517,6 +693,23 @@ def unfollow(follower_id, followee_id):
         redis.zrem(f"timeline:{follower_id}", tweet_id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — varargs zrem instead of a loop</summary>
+
+```java
+// Eager: clean the timeline on unfollow.
+void unfollow(String followerId, String followeeId) {
+    removeFollow(followerId, followeeId);
+
+    List<String> followeeTweets = getRecentTweetIds(followeeId, 100);
+    jedis.zrem("timeline:" + followerId,
+               followeeTweets.toArray(new String[0]));   // one call, not N
+}
+```
+
+</details>
+
+
 **Option 2 — Lazy removal** (preferred):
 ```python
 def unfollow(follower_id, followee_id):
@@ -530,6 +723,30 @@ def get_feed(user_id):
     # Filter out unfollowed authors
     return [t for t in tweets if t.author_id in followees]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Set.copyOf makes the O(1) membership check explicit</summary>
+
+```java
+// Lazy: leave the timeline alone, filter at read time.
+void unfollow(String followerId, String followeeId) {
+    removeFollow(followerId, followeeId);
+    // Don't touch the timeline.
+}
+
+List<Tweet> getFeed(String userId) {
+    Set<String> followees = Set.copyOf(getFollowees(userId));   // O(1) lookups
+
+    return hydrateTweets(new ArrayList<>(
+                jedis.zrevrange("timeline:" + userId, 0, 200)))
+            .stream()
+            .filter(t -> followees.contains(t.authorId()))      // drop unfollowed
+            .toList();
+}
+```
+
+</details>
+
 
 ---
 
@@ -571,6 +788,29 @@ def warm_timeline(user_id):
         pipeline.zadd(f"timeline:{user_id}", {tweet.id: tweet.created_at})
     pipeline.execute()
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void warmTimeline(String userId) {
+    List<Tweet> tweets = getFollowees(userId).stream()
+            .limit(100)                                  // Limit to avoid overload
+            .flatMap(id -> getRecentTweets(id, 20).stream())
+            .sorted(Comparator.comparing(Tweet::createdAt).reversed())
+            .limit(800)
+            .toList();
+
+    Pipeline pipe = jedis.pipelined();
+    for (Tweet t : tweets) {
+        pipe.zadd("timeline:" + userId, t.createdAt().toEpochMilli(), t.id());
+    }
+    pipe.sync();
+}
+```
+
+</details>
+
 
 ---
 
@@ -614,6 +854,27 @@ def fanout_tweet(tweet):
         # Notify online clients
         redis.publish(f"feed:{follower_id}", json.dumps(tweet))
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Redis Pub/Sub for real-time delivery
+void fanoutTweet(Tweet tweet) {
+    Pipeline pipe = jedis.pipelined();
+
+    for (String followerId : getFollowers(tweet.authorId())) {
+        pipe.zadd("timeline:" + followerId,                 // Update timeline cache
+                  tweet.createdAt().toEpochMilli(), tweet.id());
+        pipe.publish("feed:" + followerId,                  // Notify online clients
+                     json.writeValueAsString(tweet));
+    }
+    pipe.sync();
+}
+```
+
+</details>
+
 
 ---
 
@@ -668,6 +929,28 @@ def notify_followers_gradual(tweet, followers):
         schedule_notification(batch, tweet, delay)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — scheduler.schedule replaces the delay parameter</summary>
+
+```java
+void notifyFollowersGradual(Tweet tweet, List<String> followers) {
+    int batchSize = 10_000;
+
+    for (int i = 0; i * batchSize < followers.size(); i++) {
+        List<String> batch = followers.subList(
+                i * batchSize,
+                Math.min((i + 1) * batchSize, followers.size()));
+
+        // Stagger by 500ms per batch so 50M notifications don't land at once.
+        scheduler.schedule(() -> sendNotifications(batch, tweet),
+                           i * 500L, TimeUnit.MILLISECONDS);
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ## Level 7 — Ranking & Filtering
@@ -691,6 +974,22 @@ def score_tweet(tweet, user):
     return base * 0.5 + engagement * 0.3 + viral * 0.2
 ```
 
+<details>
+<summary>☕ <b>Java</b> — note the 1000.0 — integer division would zero this out</summary>
+
+```java
+double scoreTweet(Tweet tweet, User user) {
+    double base       = timeDecay(tweet.createdAt());                  // 0.0–1.0
+    double engagement = authorEngagementScore(user, tweet.authorId()); // 0.0–1.0
+    double viral      = Math.min(tweet.likeCount() / 1000.0, 1.0);     // Cap at 1.0
+
+    return base * 0.5 + engagement * 0.3 + viral * 0.2;
+}
+```
+
+</details>
+
+
 ---
 
 ### A36. Low-latency ranking
@@ -712,6 +1011,27 @@ def rank_feed(user_id):
     return reranked
 ```
 
+<details>
+<summary>☕ <b>Java</b> — three stages, each narrowing the set</summary>
+
+```java
+List<Tweet> rankFeed(String userId) {
+    List<Tweet> candidates = getTimeline(userId, 500);          // Stage 1
+
+    List<Tweet> topFifty = candidates.stream()                  // Stage 2: cheap score
+            .sorted(Comparator.comparingDouble(
+                    (Tweet t) -> quickScore(t, userId)).reversed())
+            .limit(50)
+            .toList();
+
+    return mlModel.rerank(topFifty, userId);                    // Stage 3: expensive
+}
+// The funnel is the point: expensive scoring runs on 50 items, not 500.
+```
+
+</details>
+
+
 ---
 
 ### A37. A/B testing ranking algorithms
@@ -727,6 +1047,24 @@ def get_feed(user_id):
     elif experiment == "treatment_b":
         return rank_ml_model_v2(user_id)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — exhaustive switch expression</summary>
+
+```java
+List<Tweet> getFeed(String userId) {
+    return switch (getUserExperiment(userId)) {
+        case CONTROL     -> rankChronological(userId);
+        case TREATMENT_A -> rankEngagementWeighted(userId);
+        case TREATMENT_B -> rankMlModelV2(userId);
+    };
+}
+// An exhaustive switch over an enum: adding a variant becomes a compile error,
+// not a silent null return.
+```
+
+</details>
+
 
 **Guardrails**:
 - Start with 1% of users
@@ -808,6 +1146,36 @@ class FanoutCircuitBreaker:
         return True
 ```
 
+<details>
+<summary>☕ <b>Java</b> — volatile state — the Python version's race is invisible</summary>
+
+```java
+class FanoutCircuitBreaker {
+    private static final long QUEUE_DEPTH_THRESHOLD = 1_000_000;
+    private volatile State state = State.CLOSED;
+
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    boolean shouldFanout(Tweet tweet) {
+        if (state == State.OPEN) {
+            // Shed low-priority fan-outs; keep the ones users would notice.
+            return tweet.author().followerCount() < 1000;
+        }
+
+        if (getQueueDepth() > QUEUE_DEPTH_THRESHOLD) {
+            state = State.OPEN;
+            alert("Fan-out circuit breaker opened");
+            return false;
+        }
+        return true;
+    }
+}
+// volatile matters: many request threads read this flag.
+```
+
+</details>
+
+
 **Graceful degradation**: When circuit opens, only fan out for high-follower accounts (ironic reversal — they're the ones users care about most).
 
 ---
@@ -839,6 +1207,35 @@ def tweet_handler(tweet):
     store_tweet(tweet)
     fanout_tweet(tweet)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — switch makes the ladder explicit</summary>
+
+```java
+void tweetHandler(Tweet tweet) {
+    switch (getSystemLoad()) {
+        case CRITICAL -> storeTweet(tweet);          // Just store, no fan-out
+
+        case HIGH -> {
+            storeTweet(tweet);
+            if (tweet.author().followerCount() < 1000) {
+                queueDelayedFanout(tweet, Duration.ofMinutes(1));
+            } else {
+                fanoutTweet(tweet);                  // big accounts still go now
+            }
+        }
+
+        case NORMAL -> {
+            storeTweet(tweet);
+            fanoutTweet(tweet);
+        }
+    }
+}
+// A graceful degradation ladder: shed the cheapest thing first.
+```
+
+</details>
+
 
 ---
 
@@ -906,6 +1303,28 @@ def get_feed(user_id):
     muted = redis.smembers(f"muted:{user_id}")
     return [t for t in tweets if t.author_id not in muted]
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void muteUser(String userId, String mutedUserId) {
+    jedis.sadd("muted:" + userId, mutedUserId);
+}
+
+List<Tweet> getFeed(String userId) {
+    Set<String> muted = jedis.smembers("muted:" + userId);
+
+    return getTimeline(userId).stream()
+            .filter(t -> !muted.contains(t.authorId()))
+            .toList();
+}
+// Mutes are a read-time filter, like unfollows and blocks — never a
+// rewrite of every timeline the muted user appears in.
+```
+
+</details>
+
 
 **No timeline modification needed** — filter at read time. Mute list is small (usually <100), so O(1) lookup per tweet.
 

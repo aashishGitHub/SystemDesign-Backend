@@ -75,6 +75,21 @@ def create_order(order):
     # DB has order, but no event was sent!
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same hazard</summary>
+
+```java
+// DANGEROUS
+void createOrder(Order order) {
+    db.save(order);                                       // What if this succeeds...
+    kafka.send(new ProducerRecord<>("order.created", order));  // ...and this fails?
+    // DB has the order, but no event was ever sent.
+}
+```
+
+</details>
+
+
 **The Solution**: Single atomic write to DB.
 
 ```sql
@@ -112,6 +127,26 @@ def create_order(order):
     # Both writes succeed or both fail
 ```
 
+<details>
+<summary>☕ <b>Java</b> — @Transactional is doing the real work</summary>
+
+```java
+// SAFE
+@Transactional
+void createOrder(Order order) {
+    db.save(order);
+    db.save(new OutboxEvent(
+            "Order",                       // aggregateType
+            order.id(),                    // aggregateId
+            "order.created",               // eventType
+            json.writeValueAsString(order)));
+}
+// Both writes succeed or both fail — one transaction, one database.
+```
+
+</details>
+
+
 **Outbox Processor** (separate service):
 ```python
 def poll_and_publish():
@@ -127,6 +162,31 @@ def poll_and_publish():
         kafka.send(event.event_type, event.payload)
         db.update(event.id, published=True)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same query, text block keeps the SQL readable</summary>
+
+```java
+void pollAndPublish() {
+    List<OutboxEvent> events = jdbc.query("""
+            SELECT * FROM outbox_events
+            WHERE published = FALSE
+            ORDER BY created_at
+            LIMIT 100
+            FOR UPDATE SKIP LOCKED
+            """, outboxMapper);
+
+    for (OutboxEvent event : events) {
+        kafka.send(new ProducerRecord<>(event.eventType(), event.payload()));
+        jdbc.update("UPDATE outbox_events SET published = TRUE WHERE id = ?", event.id());
+    }
+}
+// SKIP LOCKED is what lets you run N relay instances without them
+// fighting over the same rows.
+```
+
+</details>
+
 
 ### Exactly-Once in Practice
 
@@ -165,6 +225,39 @@ def process_payment(event):
         redis.delete(idempotency_key)  # Allow retry
         raise
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void processPayment(OrderEvent event) {
+    String idempotencyKey = "payment_" + event.orderId();
+
+    // Idempotency check BEFORE the external call
+    if (jedis.exists(idempotencyKey)) {
+        log.info("Already processed: {}", idempotencyKey);
+        return;
+    }
+
+    // Claim it with a TTL so a crash mid-flight doesn't block forever.
+    jedis.setex(idempotencyKey, 3600, "processing");
+
+    try {
+        RequestOptions opts = RequestOptions.builder()
+                .setIdempotencyKey(idempotencyKey)     // provider dedups too
+                .build();
+        Charge.create(chargeParams(event.amountCents()), opts);
+
+        jedis.set(idempotencyKey, "completed");
+    } catch (Exception e) {
+        jedis.del(idempotencyKey);                     // Allow retry
+        throw e;
+    }
+}
+```
+
+</details>
+
 
 ### Dead Letter Queue Strategy
 
@@ -209,6 +302,48 @@ class RobustConsumer:
             headers={'retry_count': retry_count, 'retry_at': time() + delay}
         )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Kafka headers are byte arrays, not strings</summary>
+
+```java
+class RobustConsumer {
+    private static final int    MAX_RETRIES = 5;
+    private static final String RETRY_TOPIC = "orders.retry";
+    private static final String DLQ_TOPIC   = "orders.dlq";
+
+    void consume(ConsumerRecord<String, String> message) {
+        int retryCount = intHeader(message, "retry_count", 0);
+
+        try {
+            process(message);
+        } catch (RecoverableException e) {
+            if (retryCount < MAX_RETRIES) {
+                sendToRetry(message, retryCount + 1);
+            } else {
+                sendToDlq(message, "max_retries_exceeded");
+            }
+        } catch (UnrecoverableException e) {
+            sendToDlq(message, e.getMessage());
+        }
+    }
+
+    void sendToRetry(ConsumerRecord<String, String> message, int retryCount) {
+        long delaySeconds = (long) Math.pow(2, retryCount);      // Exponential backoff
+
+        ProducerRecord<String, String> record =
+                new ProducerRecord<>(RETRY_TOPIC, message.key(), message.value());
+        record.headers().add("retry_count", String.valueOf(retryCount).getBytes(UTF_8));
+        record.headers().add("retry_at",
+                String.valueOf(Instant.now().getEpochSecond() + delaySeconds).getBytes(UTF_8));
+
+        kafka.send(record);
+    }
+}
+```
+
+</details>
+
 
 ### Consumer Group Rebalancing
 
@@ -433,6 +568,28 @@ class PoisonMessageDetector:
         self.redis.expire(f"attempts:{message_id}", 3600)
         return attempts > self.threshold
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same counter</summary>
+
+```java
+// Track processing attempts per message
+class PoisonMessageDetector {
+    private final int threshold;
+
+    PoisonMessageDetector(int threshold) { this.threshold = threshold; }
+
+    boolean isPoison(String messageId) {
+        String key = "attempts:" + messageId;
+        long attempts = jedis.incr(key);
+        jedis.expire(key, 3600);
+        return attempts > threshold;
+    }
+}
+```
+
+</details>
+
 
 **Remediation**:
 1. Send to DLQ

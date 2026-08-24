@@ -61,7 +61,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Justify the data model first: horizontal scale bought by giving up joins.
+2. Any node can coordinate. There is no leader on the data path.
+3. Layer one, partitioning: consistent hashing with vnodes, and a preference list.
+4. Layer two: `W + R > N` makes the read and write sets overlap.
+5. When a replica is down, a sloppy quorum writes to a substitute.
+6. Concurrent writes produce siblings. How you resolve them is a correctness decision.
+7. Layer three, local storage: an LSM engine — WAL plus memtable, then ack.
+8. Read repair covers only what's read; Merkle anti-entropy covers everything.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The first red box comes before any architecture: justify the data model.** A KV store buys horizontal scale and predictable single-key latency by giving up joins, secondary indexes and multi-key transactions. So ask whether the access pattern is truly key-at-a-time — and if the interviewer needs range scans or cross-key ACID, **say the tool is wrong** rather than designing around it. That sentence is worth more than three extra boxes.
 2. **Any node can coordinate a request** — there is no leader on the data path. It routes to the key's preference list and waits for W or R responses.

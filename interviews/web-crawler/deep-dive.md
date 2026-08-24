@@ -90,6 +90,35 @@ def crawl(seeds):
                 frontier.append(u)   # append = BFS; a stack/appendleft = DFS
 ```
 
+<details>
+<summary>☕ <b>Java</b> — ArrayDeque — addLast/addFirst flips BFS to DFS</summary>
+
+```java
+void crawl(List<String> seeds) {
+    Deque<String> frontier = new ArrayDeque<>(seeds);   // FIFO ⇒ BFS
+    SeenSet seen = new SeenSet();                       // Bloom + durable set
+
+    while (!frontier.isEmpty()) {
+        String url = frontier.pollFirst();              // BFS: oldest first
+        if (!robotsAllowed(url)) continue;              // politeness gate
+
+        Response resp = politeFetch(url);               // per-domain rate limit
+        blobStore.put(contentHash(resp.body()), resp.body());   // store raw first
+
+        for (String link : extractLinks(resp.body(), url)) {
+            String u = canonicalize(link);              // normalize BEFORE dedup
+            if (!seen.contains(u)) {                    // "definitely new" is trustworthy
+                seen.add(u);
+                frontier.addLast(u);                    // addLast = BFS; addFirst = DFS
+            }
+        }
+    }
+}
+```
+
+</details>
+
+
 **Why BFS, not DFS?** Importance correlates with shallowness: a site's homepage and top
 navigation (high PageRank, high value) are close to the seed, while low-value pages (deep
 parameter permutations, archives) are many hops away. BFS crawls high-value pages first
@@ -230,6 +259,45 @@ class Frontier:
         return url
 ```
 
+<details>
+<summary>☕ <b>Java</b> — two PriorityQueues: one for priority, one for the politeness clock</summary>
+
+```java
+// Mercator two-level frontier: back queues encode politeness.
+class Frontier {
+    private final Map<String, PriorityQueue<ScoredUrl>> back = new HashMap<>();
+    // (nextAllowedAt, host) ordered by time — the politeness clock.
+    private final PriorityQueue<HostSlot> heap =
+            new PriorityQueue<>(Comparator.comparing(HostSlot::nextAllowedAt));
+
+    record HostSlot(Instant nextAllowedAt, String host) {}
+
+    void add(String url, double priority) {
+        String host = registrableDomain(url);           // eTLD+1
+        back.computeIfAbsent(host, h -> {
+            heap.add(new HostSlot(Instant.now(), h));
+            return new PriorityQueue<>(
+                    Comparator.comparingDouble(ScoredUrl::score).reversed());
+        }).add(new ScoredUrl(url, priority));
+    }
+
+    String next() throws InterruptedException {
+        HostSlot slot = heap.peek();                    // soonest politeness timer
+        if (slot.nextAllowedAt().isAfter(Instant.now())) {
+            Thread.sleep(Duration.between(Instant.now(), slot.nextAllowedAt()).toMillis());
+        }
+        heap.poll();
+
+        String url = back.get(slot.host()).poll().url();  // highest-priority for this host
+        heap.add(new HostSlot(Instant.now().plus(hostDelay(slot.host())), slot.host()));
+        return url;
+    }
+}
+```
+
+</details>
+
+
 Assigning **priority before a URL is crawled** uses predictive signals (you have no
 PageRank for an uncrawled page):
 
@@ -350,6 +418,50 @@ class BloomFilter:
         return True                 # PROBABLY seen — could be a false positive
 ```
 
+<details>
+<summary>☕ <b>Java</b> — and note Guava ships one</summary>
+
+```java
+class BloomFilter {
+    private final long[] bits;
+    private final int m, k;
+
+    BloomFilter(int mBits, int kHashes) {
+        this.m = mBits;
+        this.k = kHashes;
+        this.bits = new long[(mBits + 63) / 64];
+    }
+
+    /** Double hashing: h_i = (h1 + i*h2) mod m — avoids k full hashes. */
+    private int position(byte[] item, int i) {
+        long h1 = murmur3_128(item, 0);
+        long h2 = murmur3_128(item, 1);
+        return (int) Math.floorMod(h1 + (long) i * h2, m);
+    }
+
+    void add(byte[] item) {
+        for (int i = 0; i < k; i++) {
+            int pos = position(item, i);
+            bits[pos >>> 6] |= (1L << (pos & 63));
+        }
+    }
+
+    boolean contains(byte[] item) {
+        for (int i = 0; i < k; i++) {
+            int pos = position(item, i);
+            if ((bits[pos >>> 6] & (1L << (pos & 63))) == 0) {
+                return false;      // DEFINITELY NEW — never a false negative
+            }
+        }
+        return true;               // PROBABLY seen — could be a false positive
+    }
+}
+// In production: Guava's BloomFilter, which handles sizing for a target FP rate.
+```
+
+</details>
+
+
 The membership check is two-tiered to eliminate the residual false positives:
 
 ```python
@@ -363,6 +475,28 @@ def should_crawl(url_hash):
         return False                     # truly seen → skip
     return True                          # was a Bloom false positive → crawl it
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same two-tier check</summary>
+
+```java
+boolean shouldCrawl(byte[] urlHash) {
+    if (!bloom.contains(urlHash)) {        // definitely new — no false negatives
+        bloom.add(urlHash);
+        durableSet.put(urlHash);
+        return true;
+    }
+    // "Probably seen" — confirm against the exact set to catch a false positive.
+    // This exact lookup only runs on the ~0.1% FP set, so it stays cheap.
+    if (durableSet.contains(urlHash)) {
+        return false;                      // truly seen → skip
+    }
+    return true;                           // was a Bloom false positive → crawl it
+}
+```
+
+</details>
+
 
 | Structure | Memory for 5T URLs | False negative? | False positive? |
 |---|---|---|---|
@@ -507,6 +641,38 @@ def simhash(features_with_weights, bits=64):
 def near_duplicate(sig_a, sig_b, max_hamming=3):
     return bin(sig_a ^ sig_b).count("1") <= max_hamming   # XOR then popcount
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Long.bitCount is a hardware popcount</summary>
+
+```java
+long simhash(List<WeightedFeature> features) {
+    int[] v = new int[64];
+
+    for (WeightedFeature f : features) {
+        long h = hash64(f.feature());
+        for (int i = 0; i < 64; i++) {
+            if (((h >>> i) & 1) == 1) v[i] += f.weight();
+            else                      v[i] -= f.weight();
+        }
+    }
+
+    long fingerprint = 0;
+    for (int i = 0; i < 64; i++) {
+        if (v[i] > 0) fingerprint |= (1L << i);
+    }
+    return fingerprint;
+}
+
+boolean nearDuplicate(long sigA, long sigB, int maxHamming) {
+    return Long.bitCount(sigA ^ sigB) <= maxHamming;   // XOR then popcount
+}
+// Long.bitCount compiles to a single POPCNT instruction — this is one place
+// Java is genuinely faster than the Python.
+```
+
+</details>
+
 
 The magic: flipping a few words barely moves the weighted sums, so the fingerprint
 changes in *few bits* — Hamming distance becomes a proxy for similarity.
@@ -769,6 +935,25 @@ def owner_worker(url, ring_positions, ring_map, hash_fn):
     idx = bisect.bisect_right(ring_positions, pos) % len(ring_positions)
     return ring_map[ring_positions[idx]]     # clockwise successor = owning worker
 ```
+
+<details>
+<summary>☕ <b>Java</b> — NavigableMap.ceilingEntry is Java's bisect</summary>
+
+```java
+// Consistent hashing: the owning worker is the clockwise successor.
+String ownerWorker(String url, NavigableMap<Long, String> ring) {
+    String domain = registrableDomain(url);      // eTLD+1 via Public Suffix List
+    long pos = hash(domain);
+
+    // ceilingEntry = first ring position >= pos; wrap to firstEntry if past the end.
+    Map.Entry<Long, String> e = ring.ceilingEntry(pos);
+    return (e != null ? e : ring.firstEntry()).getValue();
+}
+// TreeMap.ceilingEntry replaces bisect — one call, wrap handled explicitly.
+```
+
+</details>
+
 
 **Why consistent hashing, not `hash % 500`?** Adding/removing a worker under modulo
 remaps ~(N−1)/N of all domains → a mass frontier reshuffle. Consistent hashing (with

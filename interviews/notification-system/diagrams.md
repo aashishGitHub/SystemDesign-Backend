@@ -779,7 +779,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Ingestion persists, then enqueues, and returns in milliseconds. The order matters.
+2. A campaign is one job, not 50 million. The fan-out worker pages through.
+3. One queue per channel, never one shared queue.
+4. The red diamond is the highest-signal box: the gates run at dispatch time.
+5. Dispatch renders per user and carries a deterministic idempotency key.
+6. A circuit breaker per provider, because they fail independently.
+7. The providers are the one thing I cannot make redundant.
+8. So the answer is a fallback chain, for critical only: push → SMS → email.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Ingestion persists, then enqueues, and returns in milliseconds.** The order matters: DB row *first*, queue second. Enqueue-first means a crash between the two loses a notification invisibly — and "invisible" is the worst adjective in this system.
 2. **A campaign is one job, not 50 million.** The fan-out worker pages through recipients ~1K at a time writing per-user jobs, guarded by `UNIQUE(campaign_id, user_id)` so a crashed-and-restarted fan-out cannot duplicate. Expanding a 50M recipient list inside the API request is the classic wrong answer.

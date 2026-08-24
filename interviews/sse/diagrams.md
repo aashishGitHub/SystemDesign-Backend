@@ -65,7 +65,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Hop 1 is one long-lived HTTP response. No upgrade handshake, no new protocol.
+2. Each tab gets a goroutine and a buffered channel, flushed after every write.
+3. The broker is a directory of who is connected, nested three deep.
+4. The security decision: check authorization per event, not once at connection time.
+5. Hop 2 is the part people miss: a pod only knows its own connections.
+6. The reliability decision is fire-and-forget. The DB write is what the response reflects.
+7. Graceful shutdown is where SSE fights Kubernetes.
+8. Treat an event as a hint — "something changed, refetch it".
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Hop 1 is one long-lived HTTP response, and that's the whole appeal of SSE:** no upgrade handshake, no new protocol — `Content-Type: text/event-stream` on an ordinary GET, and the browser's built-in `EventSource` gives you **auto-reconnect and `Last-Event-ID` resume for free**, which you'd have to hand-write on a WebSocket.
 2. **Each connected tab gets a goroutine and a buffered channel**, and the handler flushes after every write (without an explicit flush the response sits in a buffer and the client sees nothing). A periodic heartbeat comment keeps intermediaries from timing the connection out.

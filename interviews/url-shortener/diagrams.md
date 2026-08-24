@@ -63,7 +63,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Generate the code from a unique id, not from a hash of the URL.
+2. Creation also does safety work, and the mapping is then immutable.
+3. Storage is a key-value point lookup, sharded by a hash of the code.
+4. The read path starts at the edge: a CDN plus an in-process L1.
+5. Cache-aside with two details: negative-cache the 404s, and coalesce concurrent misses.
+6. Return 302, not 301, paired with `Cache-Control: no-store`.
+7. Emit the click event after responding, onto a stream.
+8. Aggregate downstream: counters plus HyperLogLog for unique visitors.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The first red box is the one candidates get wrong: generate the code from a unique *id*, not from a hash of the URL.** A counter block or Snowflake id encoded to Base62 is unique **by construction** — no collision check, no read-before-write. Truncating MD5/SHA feels clever and is a trap: by the birthday bound you hit a 50% collision probability at roughly 2.2M URLs for a 7-character code, and a collision here sends a user to *someone else's page*, which is worse than a 404.
 2. **Creation also does safety work** — blocklist/Safe-Browsing at create time plus continuous re-scan — and the mapping is then immutable.

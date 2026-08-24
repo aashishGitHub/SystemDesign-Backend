@@ -57,6 +57,29 @@ def get_nearby_drivers(rider_lat, rider_lng, redis):
     return [d for d in drivers if distance(d, rider) < 2000]
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the distance filter is the point — cells are rectangles, not circles</summary>
+
+```java
+List<Driver> getNearbyDrivers(double riderLat, double riderLng, Jedis redis) {
+    String centerCell = Geohash.encode(riderLat, riderLng, 6);
+
+    List<String> cells = new ArrayList<>();
+    cells.add(centerCell);
+    cells.addAll(Geohash.neighbors(centerCell));      // 9 cells total
+
+    return cells.stream()
+            .flatMap(cell -> redis.smembers("drivers:" + cell).stream())
+            .map(this::loadDriver)
+            // Geohash cells are approximate — filter by ACTUAL distance.
+            .filter(d -> distance(d, riderLat, riderLng) < 2000)
+            .toList();
+}
+```
+
+</details>
+
+
 **Comparison table**:
 
 | Feature | Geohash | S2 (Google) | H3 (Uber) |
@@ -80,6 +103,27 @@ neighbors = h3.k_ring(cell, k=1)
 # Get ring only (not center) — useful for expanding search
 ring = h3.hex_ring(cell, k=1)  # Just the 6 surrounding cells
 ```
+
+<details>
+<summary>☕ <b>Java</b> — com.uber:h3 — check method names against your version</summary>
+
+```java
+// Uber's H3, via com.uber:h3 (verify the method names for your version —
+// newer releases renamed geoToH3 → latLngToCell and kRing → gridDisk).
+H3Core h3 = H3Core.newInstance();
+
+// Resolution 9 ≈ 174 m edge length
+String cell = h3.geoToH3Address(37.7749, -122.4194, 9);
+
+// Ring of neighbours (k=1 ⇒ 7 cells: centre + 6)
+List<String> neighbors = h3.kRing(cell, 1);
+
+// Ring only, no centre — useful when expanding a search outward
+List<String> ring = h3.hexRing(cell, 1);
+```
+
+</details>
+
 
 ---
 
@@ -122,6 +166,39 @@ class DynamicGeospatialIndex:
             self.redis.sadd(f"drivers:p{p}:{coarse_cell}", driver_id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — one pipeline for the whole multi-precision write</summary>
+
+```java
+class DynamicGeospatialIndex {
+    private final DensityMap densityMap;
+
+    int getPrecision(double lat, double lng) {
+        double density = densityMap.zoneDensity(lat, lng);
+        if (density > 500) return 7;      // High density (downtown) ≈ 150 m cells
+        if (density > 100) return 6;      // ≈ 1.2 km cells
+        return 5;                          // ≈ 5 km cells
+    }
+
+    void updateDriverLocation(String driverId, double lat, double lng) {
+        int precision = getPrecision(lat, lng);
+
+        Pipeline pipe = jedis.pipelined();
+        pipe.sadd("drivers:p" + precision + ":" + Geohash.encode(lat, lng, precision),
+                  driverId);
+
+        // Also index at coarser precisions so a sparse-area search can fall back.
+        for (int p = precision - 1; p > 4; p--) {
+            pipe.sadd("drivers:p" + p + ":" + Geohash.encode(lat, lng, p), driverId);
+        }
+        pipe.sync();
+    }
+}
+```
+
+</details>
+
+
 **Hot cell handling** (Super Bowl at stadium):
 
 ```python
@@ -135,6 +212,25 @@ def handle_hot_cell_query(cell, redis):
     
     return redis.smembers(f"drivers:{cell}")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same sampling guard</summary>
+
+```java
+Set<String> handleHotCellQuery(String cell, Jedis redis) {
+    long driverCount = redis.scard("drivers:" + cell);
+
+    if (driverCount > 1000) {                 // Hot cell
+        // Sample instead of loading all — you only need a few good candidates,
+        // and SMEMBERS on a huge set blocks Redis.
+        return new HashSet<>(redis.srandmember("drivers:" + cell, 100));
+    }
+    return redis.smembers("drivers:" + cell);
+}
+```
+
+</details>
+
 
 **Capacity math**:
 ```text
@@ -272,6 +368,51 @@ def validate_gps_update(driver_id, update):
     return True
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Spring + pipeline; note the TTL doing the staleness work</summary>
+
+```java
+record LocationUpdate(double lat, double lng,
+                      int heading,        // 0-359
+                      double speed,       // m/s
+                      double accuracy) {} // meters
+
+@PostMapping("/driver/location")
+ResponseEntity<?> updateLocation(@RequestBody LocationUpdate update,
+                                 @AuthenticationPrincipal Driver driver) {
+
+    // 1. Validate — reject physically impossible jumps (GPS drift/spoofing)
+    if (!validateGpsUpdate(driver.id(), update)) {
+        return ResponseEntity.badRequest().body(Map.of("error", "invalid_location"));
+    }
+
+    // 2. Compute cell
+    String newCell = Geohash.encode(update.lat(), update.lng(), 6);
+    String cellKey = "driver:" + driver.id() + ":cell";
+    String oldCell = jedis.get(cellKey);
+
+    // 3. One pipeline — move cell membership and write the position together.
+    Pipeline pipe = jedis.pipelined();
+    if (oldCell != null && !oldCell.equals(newCell)) {
+        pipe.srem("drivers:" + oldCell, driver.id());
+    }
+    pipe.sadd("drivers:" + newCell, driver.id());
+    pipe.set(cellKey, newCell);
+    pipe.hset("driver:" + driver.id(), Map.of(
+            "lat",     String.valueOf(update.lat()),
+            "lng",     String.valueOf(update.lng()),
+            "heading", String.valueOf(update.heading()),
+            "ts",      String.valueOf(Instant.now().getEpochSecond())));
+    pipe.expire("driver:" + driver.id(), 60);     // stale drivers age out
+    pipe.sync();
+
+    return ResponseEntity.ok(Map.of("ok", true));
+}
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Handling 250K Writes/Sec
@@ -349,6 +490,37 @@ class LocationServiceWithFallback:
             logger.error("Primary Redis failed, using fallback")
             metrics.increment("location_service.fallback_activated")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — volatile on the fallback flag</summary>
+
+```java
+class LocationServiceWithFallback {
+    private volatile boolean useFallback = false;
+
+    void updateLocation(String driverId, Location location) {
+        try {
+            if (!useFallback) {
+                primary.update(driverId, location);
+                return;
+            }
+            // Degraded: write the driver's own position, skip the cell index.
+            // Matching gets worse; ingest keeps working.
+            fallback.hset("driver:" + driverId, location.asMap());
+
+        } catch (JedisException e) {
+            useFallback = true;
+            log.error("Primary Redis failed, using fallback", e);
+            metrics.increment("location_service.fallback_activated");
+        }
+    }
+}
+// volatile: this flag is flipped by one request thread and read by all of
+// them. Without it, other threads may never see the change.
+```
+
+</details>
+
 
 ---
 
@@ -449,6 +621,43 @@ class DriverMatcher:
         return 1 - (diff / 180)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — hard filters as a filter chain, scoring in parallel</summary>
+
+```java
+class DriverMatcher {
+
+    Optional<Driver> match(RideRequest request) {
+        // 1-2. Candidates, then hard filters (disqualifiers, not scores)
+        List<Driver> candidates = getNearbyDrivers(
+                        request.pickupLat(), request.pickupLng(), 5.0).stream()
+                .filter(d -> d.vehicleType() == request.vehicleType())
+                .filter(Driver::isAvailable)
+                .filter(d -> !d.isSuspended())
+                .toList();
+
+        if (candidates.isEmpty()) return Optional.empty();
+
+        // 3. Score in parallel — scoring hits the routing service per driver.
+        List<CompletableFuture<Scored>> futures = candidates.stream()
+                .map(d -> CompletableFuture.supplyAsync(
+                        () -> new Scored(d, scoreDriver(d, request)), pool))
+                .toList();
+
+        // 4. Best score wins
+        return futures.stream()
+                .map(CompletableFuture::join)
+                .max(Comparator.comparingDouble(Scored::score))
+                .map(Scored::driver);
+    }
+
+    record Scored(Driver driver, double score) {}
+}
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Batch Matching & Global Optimization
@@ -505,6 +714,48 @@ class BatchMatcher:
         score = await self.score_driver(driver, request)
         return 1 - score
 ```
+
+<details>
+<summary>☕ <b>Java</b> — and the honest note that Java has no scipy</summary>
+
+```java
+class BatchMatcher {
+    static final Duration BATCH_WINDOW = Duration.ofSeconds(2);
+
+    /**
+     * Batching lets you solve the GLOBAL assignment instead of greedily
+     * taking the best driver for whoever asked first.
+     */
+    List<Assignment> matchBatch(List<RideRequest> requests, List<Driver> drivers) {
+        if (requests.isEmpty() || drivers.isEmpty()) return List.of();
+
+        int size = Math.max(requests.size(), drivers.size());   // pad to square
+        double[][] cost = new double[size][size];
+        for (double[] row : cost) Arrays.fill(row, 1e9);        // high cost = bad match
+
+        for (int i = 0; i < requests.size(); i++) {
+            for (int j = 0; j < drivers.size(); j++) {
+                if (isCompatible(requests.get(i), drivers.get(j))) {
+                    cost[i][j] = computeCost(requests.get(i), drivers.get(j));
+                }
+            }
+        }
+
+        // Hungarian algorithm — O(n³). Java has no scipy, so this is either
+        // a small library or ~100 lines you write. At batch sizes above a few
+        // hundred, use a greedy or auction approximation instead.
+        int[] assignment = new HungarianAlgorithm(cost).solve();
+
+        return IntStream.range(0, requests.size())
+                .filter(i -> assignment[i] < drivers.size() && cost[i][assignment[i]] < 1e9)
+                .mapToObj(i -> new Assignment(requests.get(i), drivers.get(assignment[i])))
+                .toList();
+    }
+}
+```
+
+</details>
+
 
 **Latency budget**:
 ```text
@@ -658,6 +909,56 @@ class TripStateMachine:
             process_payment_async(trip)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — EnumMap + a hard failure on illegal transitions</summary>
+
+```java
+enum TripState {
+    REQUESTED, MATCHING, MATCHED, DRIVER_ARRIVING, ARRIVED,
+    IN_PROGRESS, COMPLETED, CANCELLED,
+    PAYMENT_PENDING, PAID, PAYMENT_FAILED
+}
+
+enum TripEvent {
+    MATCH_FOUND, MATCH_TIMEOUT, DRIVER_ACCEPTED, DRIVER_ARRIVED,
+    TRIP_STARTED, TRIP_ENDED, RIDER_CANCELLED, DRIVER_CANCELLED,
+    PAYMENT_SUCCESS, PAYMENT_FAILED
+}
+
+class TripStateMachine {
+    // EnumMap: array-backed, so lookups are index arithmetic, not hashing.
+    private static final Map<TripState, Map<TripEvent, TripState>> TRANSITIONS =
+            new EnumMap<>(Map.of(
+                    TripState.REQUESTED, new EnumMap<>(Map.of(
+                            TripEvent.MATCH_FOUND,   TripState.MATCHED,
+                            TripEvent.MATCH_TIMEOUT, TripState.CANCELLED)),
+                    TripState.MATCHED, new EnumMap<>(Map.of(
+                            TripEvent.DRIVER_ACCEPTED, TripState.DRIVER_ARRIVING,
+                            TripEvent.DRIVER_CANCELLED, TripState.MATCHING))
+                    // ... remaining states
+            ));
+
+    TripState transition(Trip trip, TripEvent event) {
+        TripState next = TRANSITIONS
+                .getOrDefault(trip.state(), Map.of())
+                .get(event);
+
+        if (next == null) {
+            // Reject illegal transitions loudly. Silently ignoring them is
+            // how a trip ends up COMPLETED but never PAID.
+            throw new IllegalTransitionException(trip.state(), event);
+        }
+        trip.setState(next);
+        return next;
+    }
+}
+// COMPLETED is deliberately NOT PAID — a card can fail after the rider is
+// already out of the car.
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Handling Edge Cases & Failures
@@ -712,6 +1013,48 @@ class DriverArrivalMonitor:
         await self.dispatch_service.redispatch(trip)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — scheduled polling instead of a sleep loop</summary>
+
+```java
+class DriverArrivalMonitor {
+    static final int NO_SHOW_TIMEOUT_MINUTES = 10;
+
+    void monitor(Trip trip) {
+        Instant deadline = trip.matchedAt().plus(Duration.ofMinutes(NO_SHOW_TIMEOUT_MINUTES));
+
+        ScheduledFuture<?>[] handle = new ScheduledFuture<?>[1];
+        handle[0] = scheduler.scheduleAtFixedRate(() -> {
+            Trip current = tripRepo.get(trip.id());
+
+            if (current.state() == TripState.ARRIVED) {
+                handle[0].cancel(false);                      // Success
+                return;
+            }
+
+            Location driverLoc = locationService.get(trip.driverId());
+            double distance = haversine(driverLoc.lat(), driverLoc.lng(),
+                                        trip.pickupLat(), trip.pickupLng());
+
+            if (distance < 50) {
+                // Driver is there but never tapped "arrived" — do it for them.
+                tripService.transition(current, TripEvent.DRIVER_ARRIVED);
+                handle[0].cancel(false);
+                return;
+            }
+
+            if (Instant.now().isAfter(deadline)) {
+                handleNoShow(current);
+                handle[0].cancel(false);
+            }
+        }, 30, 30, TimeUnit.SECONDS);
+    }
+}
+```
+
+</details>
+
+
 **Edge case: Payment retry**
 
 ```python
@@ -744,6 +1087,52 @@ class PaymentRetryWorker:
         await self.trip_service.transition(trip, TripEvent.PAYMENT_FAILED)
         await self.suspend_rider_for_payment(trip.rider_id)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — scheduled retries — a thread never sleeps 30 minutes</summary>
+
+```java
+class PaymentRetryWorker {
+    static final int MAX_RETRIES = 3;
+    static final Duration[] RETRY_DELAYS = {
+            Duration.ofMinutes(1), Duration.ofMinutes(5), Duration.ofMinutes(30)
+    };
+
+    void processPayment(Trip trip) {
+        processAttempt(trip, 0);
+    }
+
+    private void processAttempt(Trip trip, int attempt) {
+        try {
+            // The idempotency key is CONSTANT across retries — that's what
+            // stops attempt 2 double-charging when attempt 1 actually landed.
+            RequestOptions opts = RequestOptions.builder()
+                    .setIdempotencyKey("trip_" + trip.id() + "_payment")
+                    .build();
+
+            Charge.create(chargeParams(trip), opts);
+            tripService.transition(trip, TripEvent.PAYMENT_SUCCESS);
+
+        } catch (CardException e) {
+            log.warn("Payment declined for trip {}, attempt {}", trip.id(), attempt + 1);
+
+            if (attempt < MAX_RETRIES - 1) {
+                // Schedule, don't block a worker thread for 30 minutes.
+                scheduler.schedule(() -> processAttempt(trip, attempt + 1),
+                                   RETRY_DELAYS[attempt].toSeconds(), TimeUnit.SECONDS);
+            } else {
+                tripService.transition(trip, TripEvent.PAYMENT_FAILED);
+                suspendRider(trip.riderId());
+            }
+        } catch (StripeException e) {
+            throw new PaymentSystemException(e);
+        }
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -830,6 +1219,48 @@ async def track_trip(websocket: WebSocket, trip_id: str):
         manager.disconnect(trip_id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — unsubscribe on close, or the thread leaks per finished trip</summary>
+
+```java
+@Component
+class TrackingManager extends TextWebSocketHandler {
+    private final Map<String, WebSocketSession> connections = new ConcurrentHashMap<>();
+    private final ExecutorService subscribers = Executors.newCachedThreadPool();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) {
+        String tripId = tripIdOf(session);
+        connections.put(tripId, session);
+
+        subscribers.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                jedis.subscribe(new JedisPubSub() {
+                    @Override
+                    public void onMessage(String channel, String message) {
+                        WebSocketSession s = connections.get(tripId);
+                        if (s == null || !s.isOpen()) {
+                            unsubscribe();          // stop the moment the client is gone
+                            return;
+                        }
+                        try { s.sendMessage(new TextMessage(message)); }
+                        catch (IOException e) { unsubscribe(); }
+                    }
+                }, "trip:" + tripId + ":location");
+            }
+        });
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        connections.remove(tripIdOf(session));
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Scaling to Millions of Connections
@@ -908,6 +1339,33 @@ class TrackingServiceWithDegradation:
         await self.manager.connect(trip_id, websocket)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same admission control</summary>
+
+```java
+class TrackingServiceWithDegradation {
+    static final int MAX_CONNECTIONS_PER_SERVER = 50_000;
+
+    void connect(String tripId, WebSocketSession session) throws IOException {
+        if (connections.size() > MAX_CONNECTIONS_PER_SERVER) {
+            // Shed honestly: tell the client to poll instead of silently
+            // accepting a connection this box cannot serve.
+            session.sendMessage(new TextMessage(json.writeValueAsString(Map.of(
+                    "error",    "server_busy",
+                    "fallback", "/api/trip/" + tripId + "/location"))));
+            session.close(CloseStatus.SERVICE_OVERLOAD);
+            return;
+        }
+        manager.connect(tripId, session);
+    }
+}
+// ~50K sockets/server is an order-of-magnitude planning number, not a
+// hard limit — it depends on heap, buffer sizes and kernel tuning.
+```
+
+</details>
+
+
 ---
 
 ## 6. Surge Pricing
@@ -975,6 +1433,39 @@ class SurgeService:
             await self.redis.set(f"surge:{zone_id}", smoothed, ex=120)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the integer-division trap</summary>
+
+```java
+class SurgeService {
+    private final int h3Resolution;      // 7 ≈ 5 km² cells
+
+    double computeSurge(String zoneId) {
+        int supply = getDriverCount(zoneId);                  // available drivers
+        int demand = getRequestCount(zoneId, Duration.ofMinutes(5));
+
+        double ratio = (supply == 0)
+                ? Double.POSITIVE_INFINITY
+                : (double) demand / supply;                   // cast, or integer division
+
+        return ratioToMultiplier(ratio);
+    }
+
+    /** Piecewise linear — deliberately not a smooth curve, so it's explainable. */
+    double ratioToMultiplier(double ratio) {
+        if (ratio <= 1.0) return 1.0;                          // No surge
+        if (ratio <= 1.5) return 1.0 + (ratio - 1.0) * 0.4;
+        if (ratio <= 3.0) return 1.2 + (ratio - 1.5) * 0.5;
+        return Math.min(2.0 + (ratio - 3.0) * 0.3, 5.0);       // Cap at 5x
+    }
+}
+// (double) demand / supply — without the cast this is integer division and
+// every ratio below 2 collapses to 1.
+```
+
+</details>
+
+
 ---
 
 ### 🔴 Architect — Anti-Oscillation & Fraud Prevention
@@ -1010,6 +1501,45 @@ class SurgeStabilizer:
         return smoothed
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same three stabilizers</summary>
+
+```java
+class SurgeStabilizer {
+    static final double SMOOTHING_FACTOR = 0.4;    // weight on the new value
+    static final int    COOLDOWN_MINUTES = 5;      // min time before reducing
+    static final double HYSTERESIS       = 0.2;    // must drop 20% to reduce
+
+    double stabilizeSurge(String zoneId, double computedSurge) {
+        SurgeState state = getSurgeState(zoneId);
+        double oldSurge = state.multiplier();
+
+        // Exponential smoothing — stops the price flickering between polls.
+        double smoothed = oldSurge * (1 - SMOOTHING_FACTOR)
+                        + computedSurge * SMOOTHING_FACTOR;
+
+        if (smoothed < oldSurge) {
+            // Cooldown: don't drop the price right after a spike.
+            if (state.lastSpike() != null
+                    && Duration.between(state.lastSpike(), Instant.now())
+                               .toMinutes() < COOLDOWN_MINUTES) {
+                return oldSurge;
+            }
+            // Hysteresis: only reduce on a meaningful drop, not noise.
+            if ((oldSurge - smoothed) / oldSurge < HYSTERESIS) {
+                return oldSurge;
+            }
+        }
+        return smoothed;
+    }
+}
+// Smoothing + cooldown + hysteresis are three separate defences against
+// the same failure: a price that oscillates and destroys trust.
+```
+
+</details>
+
+
 **Fraud detection**:
 
 ```python
@@ -1044,6 +1574,37 @@ class SurgeFraudDetector:
             duration_days=7
         )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note the (double) cast and the small-sample guard</summary>
+
+```java
+class SurgeFraudDetector {
+
+    boolean detectGaming(String driverId) {
+        List<OnlineEvent> events = getDriverOnlineEvents(driverId, Duration.ofDays(30));
+
+        if (events.size() < 10) return false;         // Not enough data
+
+        long surgeOnlineCount = events.stream()
+                .filter(e -> getHistoricalSurge(e.zoneId(), e.timestamp()) > 1.5)
+                .count();
+
+        double ratio = (double) surgeOnlineCount / events.size();
+
+        if (ratio > 0.7) {                             // 70%+ online during surge
+            log.warn("Potential surge gaming: driver={}, ratio={}", driverId, ratio);
+            return true;
+        }
+        return false;
+    }
+}
+// The size() < 10 guard is doing real work — without it, a driver with one
+// surge login reads as 100% and gets flagged.
+```
+
+</details>
+
 
 ---
 
@@ -1179,6 +1740,29 @@ cell = h3.geo_to_h3(37.7749, -122.4194, resolution=7)
 parent = h3.h3_to_parent(cell, resolution=6)
 children = h3.h3_to_children(cell, resolution=8)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — com.uber:h3 — hedge the method names</summary>
+
+```java
+// Why hexagons:
+//  1. Uniform distance from centre to any edge (squares are not)
+//  2. Only 6 neighbours, not 8 — no awkward diagonal case
+//  3. Hierarchical, resolutions 0-15
+H3Core h3 = H3Core.newInstance();
+
+// Uber uses resolution 7 for surge (~5 km²)
+String cell = h3.geoToH3Address(37.7749, -122.4194, 7);
+
+// Parent/child for drill-down
+String parent         = h3.h3ToParentAddress(cell, 6);
+List<String> children = h3.h3ToChildren(cell, 8);
+// Verify method names against your H3 version — newer releases renamed
+// several of these (cellToParent, cellToChildren).
+```
+
+</details>
+
 
 **Impact**: 15% more accurate surge pricing, better driver utilization.
 

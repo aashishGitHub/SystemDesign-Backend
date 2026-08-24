@@ -132,7 +132,7 @@ Use it when **the client also sends at high frequency**: chat typing, cursor pos
 
 The bill you pay for that:
 
-| Cost | Detail |
+| Cost | Detail | 
 |---|---|
 | **Stateful servers** | Session state lives in a specific process → hop 2 becomes mandatory, and so does sticky routing |
 | **Deploys are hard** | Every deploy severs every connection. You need connection draining + client reconnect with **jittered** backoff, or a rolling restart reconnect-storms your own cluster |

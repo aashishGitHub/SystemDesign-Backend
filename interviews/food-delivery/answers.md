@@ -188,6 +188,30 @@ def validate_cart_at_checkout(cart, current_menu):
     return issues  # empty ⇒ proceed; else surface a re-confirm screen
 ```
 
+<details>
+<summary>☕ <b>Java</b> — prices as long minor units</summary>
+
+```java
+List<CartIssue> validateCartAtCheckout(Cart cart, Menu currentMenu) {
+    List<CartIssue> issues = new ArrayList<>();
+
+    for (LineItem line : cart.lineItems()) {
+        MenuItem item = currentMenu.get(line.itemId());
+
+        if (item == null || !item.available()) {
+            issues.add(CartIssue.removed(line));
+        } else if (item.basePriceCents() != line.priceSnapshotCents()) {
+            issues.add(CartIssue.priceChanged(line, item.basePriceCents()));
+        }
+    }
+    return issues;   // empty ⇒ proceed; else surface a re-confirm screen
+}
+// Prices are long cents. Comparing doubles here would be a real bug.
+```
+
+</details>
+
+
 The cart stores a **price snapshot + menu_version** per line at add-time (for display), but checkout **re-resolves against the live menu**. Divergence is surfaced, never silently applied. This keeps the browse experience fast (snapshot) while keeping money correct (re-resolve).
 
 ---
@@ -304,6 +328,32 @@ def place_order(body, idempotency_key: str = Header(...)):
     return order.response
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Spring, with the key as a required header</summary>
+
+```java
+// Client generates a UUID per logical checkout and resends it on every retry.
+@PostMapping("/orders")
+ResponseEntity<OrderResponse> placeOrder(
+        @RequestBody OrderRequest body,
+        @RequestHeader("Idempotency-Key") String idempotencyKey) {
+
+    Optional<StoredResponse> existing = store.get(idempotencyKey);
+    if (existing.isPresent()) {
+        return ResponseEntity.ok(existing.get().response());   // replay — no new charge
+    }
+
+    // ... validate, authorize payment (also keyed by idempotencyKey), create order ...
+    OrderResponse response = createOrder(body, idempotencyKey);
+
+    store.put(idempotencyKey, response, Duration.ofHours(24));
+    return ResponseEntity.ok(response);
+}
+```
+
+</details>
+
+
 The idempotency key is generated **once on the client** for a checkout attempt and reused across every retry. The server records key → result; a repeat returns the stored result instead of acting again. The *same key* is passed to the payment provider so the charge is deduped too. This is the standard payments pattern — deep treatment in [api-design](../api-design/) and [seat-reservation](../seat-reservation/).
 
 ---
@@ -417,6 +467,41 @@ async def await_restaurant(order, timeout_s=120):
         else: escalate_or_reject(order)   # ping restaurant, then reject if still silent
 ```
 
+<details>
+<summary>☕ <b>Java</b> — exhaustive switch over the decision</summary>
+
+```java
+void awaitRestaurant(Order order, Duration timeout) {
+    Decision decision = restaurantResponse(order.id(), timeout);
+
+    switch (decision) {
+        case ACCEPT -> {
+            capturePayment(order);
+            order.setState(OrderState.CONFIRMED);
+        }
+        case REJECT -> {
+            voidAuthorization(order);                 // customer is never charged
+            order.setState(OrderState.REJECTED);
+            notifyCustomer(order, "Restaurant can't take this order — you weren't charged");
+            suggestAlternatives(order.customerId(), order.restaurantId());
+        }
+        case NO_RESPONSE -> {
+            if (order.restaurant().autoAccept()) {
+                capturePayment(order);
+                order.setState(OrderState.CONFIRMED);
+            } else {
+                escalateOrReject(order);              // ping, then reject if still silent
+            }
+        }
+    }
+}
+// Authorize-then-capture is what makes REJECT free: void costs nothing,
+// a refund after capture does not.
+```
+
+</details>
+
+
 The key rule: a reject **before capture** means the customer is never charged (just void the hold, A18), and you immediately offer alternatives so the customer isn't stranded. No-response is handled by policy — high-trust restaurants auto-accept; others get escalated then rejected. This second acceptance gate (absent in ride-sharing) is exactly why authorize-then-capture matters.
 
 ---
@@ -506,6 +591,29 @@ async def dispatch(order, candidates):
     # exhausted nearby couriers:
     widen_radius(order) or reoffer_with_incentive(order) or delay_and_retry(order)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Optional.or chains the fallbacks</summary>
+
+```java
+Assignment dispatch(Order order, List<Courier> candidates) {
+    for (Courier courier : ranked(candidates)) {          // best-fit first
+        if (offer(courier, order, Duration.ofSeconds(20))) {
+            return assign(order, courier);                // accepted
+        }
+        penalizeAcceptanceRate(courier);                  // declined or timed out
+        // Loop continues — but re-rank against the CLOCK, not the original ready time.
+    }
+
+    // Exhausted nearby couriers:
+    return widenRadius(order)
+            .or(() -> reofferWithIncentive(order))
+            .orElseGet(() -> delayAndRetry(order));
+}
+```
+
+</details>
+
 
 Reassignment reuses the ride-sharing offer/timeout loop, but with a food-specific twist: the **food-ready clock keeps ticking**, so on each decline the dispatcher re-evaluates against *time remaining*, may widen the radius or add a courier incentive, and in the worst case tells the restaurant to hold/delay cooking. The goal is to avoid the food being ready with no courier present.
 

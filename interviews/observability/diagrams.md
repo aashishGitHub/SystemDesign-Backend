@@ -58,7 +58,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Instrument once, vendor-neutrally, so the backend choice stays reversible.
+2. State what each pillar is bad at, not just what it's good at.
+3. Cardinality is the thing that silently destroys metric systems.
+4. Sampling is a genuine fidelity/cost trade. Head is cheap, tail is informed.
+5. The three pillars are useful because they share one join key: `trace_id`.
+6. SLIs and SLOs, not resource metrics. Never "is CPU high?"
+7. Therefore page on symptoms, never causes. Multi-burn-rate alerting.
+8. Cost is a design constraint: cardinality × sampling rate × retention.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Instrument once, vendor-neutrally.** OpenTelemetry (the OpenTracing + OpenCensus merger) gives an API, SDK and OTLP wire format, so the backend choice stays reversible. The load-bearing detail is **propagating `traceparent` at every process boundary** — HTTP header, Kafka record header, gRPC metadata — because a trace that stops at a queue is not a trace.
 2. **State what each pillar is *bad* at, not just good at:** metrics are cheap and aggregatable but can't tell you *which* request; traces show causality but are expensive to keep in full; logs explain but don't aggregate. Prefer **histograms over summaries** when you need a cross-instance p99 — buckets are additive, per-instance quantiles are not.

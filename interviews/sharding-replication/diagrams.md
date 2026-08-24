@@ -62,7 +62,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Ask what to shard before how. Not every table needs it.
+2. Replication first, because it is the cheaper win.
+3. Sync versus async replication is your RPO.
+4. The bug users actually notice: read-your-own-writes.
+5. Sharding is the only way past a single node's write ceiling.
+6. Every shard scheme has a hot shard. Split the key.
+7. State what your shard key breaks, out loud.
+8. Then the two operations that make it real, starting with online resharding.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Ask *what* to shard before *how*.** Not every table needs it — only write-hot ones. Reference and static data stays on a single replicated node, because sharding it buys nothing and costs you joins. Saying this first shows you're sizing the problem rather than reaching for the biggest hammer.
 2. **Replication first, because it's the cheaper win:** one leader takes writes, followers serve reads and stand ready to be promoted.

@@ -416,6 +416,29 @@ with tracer.start_as_current_span("payments.charge") as span:
     resp = http.post(url)   # OTel auto-injects traceparent into outbound headers
 ```
 
+<details>
+<summary>☕ <b>Java</b> — try-with-resources for Scope; end() in finally</summary>
+
+```java
+// Conceptual OpenTelemetry usage (verify exact API in current OTel Java docs):
+Span span = tracer.spanBuilder("payments.charge").startSpan();
+try (Scope scope = span.makeCurrent()) {
+    span.setAttribute("user_tier", "premium");        // bounded — fine as a span attribute
+    span.setAttribute("customer_id", customerId);     // HIGH cardinality is FINE on a span
+    HttpResponse<String> resp = http.send(request, ofString());
+    // OTel auto-injects traceparent into outbound headers via the propagator.
+} catch (Exception e) {
+    span.recordException(e);
+    span.setStatus(StatusCode.ERROR);
+    throw e;
+} finally {
+    span.end();                                       // must always run
+}
+```
+
+</details>
+
+
 | Legacy header | Origin | W3C replacement |
 |---|---|---|
 | `X-B3-TraceId` etc. | Zipkin (B3) | `traceparent` |

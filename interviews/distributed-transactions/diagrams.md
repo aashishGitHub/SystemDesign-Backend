@@ -63,7 +63,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Refuse the premise: there is no cross-service `BEGIN…COMMIT`.
+2. Split the two problems people conflate: atomicity across services, and what readers see.
+3. 2PC exists — prepare/vote then commit/abort — but it holds locks between phases.
+4. For product flows the answer is a saga: local transactions plus compensations.
+5. The saga's genuine cost: no isolation. Step 1's commit is visible immediately.
+6. The dual-write problem: your DB commit and your event publish can't be atomic.
+7. Every step must be idempotent, because at-least-once retries are guaranteed.
+8. Finally the sweeper — the component no cloud service provides.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **The first red box is a *framing* move, and it is the highest-signal thing here: refuse the premise.** There is no cross-service `BEGIN…COMMIT` — local ACID guarantees stop at one database. So "we'll wrap it in a distributed transaction" is not a design, it's a trade of availability for atomicity that most product flows should decline.
 2. **Then split the two problems people conflate:** *atomicity across services* (do all steps happen, or none?) and *what readers see* (linearizable, causal, eventual — the CAP/PACELC and isolation axes). Different tools, different failure modes.

@@ -127,6 +127,25 @@ def search(node, key):
 #   16 KB page, ~ (key+pointer) ~ 32 B → fanout ~ 500 → 100M keys ≈ 3-4 levels
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same traversal</summary>
+
+```java
+// Conceptual B+tree lookup (illustrative, not a real engine API)
+Value search(Node node, Key key) {
+    while (!node.isLeaf()) {
+        int i = upperBound(node.keys(), key);      // binary search within the page
+        node  = readPage(node.children()[i]);      // one page read (maybe cached)
+    }
+    return node.find(key);                         // search the leaf page
+}
+// Height ≈ log_fanout(N). Fanout is large because pages are big and keys small.
+//   16 KB page, ~32 B per (key+pointer) → fanout ~500 → 100M keys ≈ 3-4 levels
+```
+
+</details>
+
+
 Insert with split:
 
 ```
@@ -214,6 +233,45 @@ class LSMEngine:
         self.wal.discard_segment(immutable.wal_segment)  # WAL for flushed data is safe to drop
 ```
 
+<details>
+<summary>☕ <b>Java</b> — ConcurrentSkipListMap is Java's built-in memtable</summary>
+
+```java
+// Illustrative LSM write path (not a real engine API)
+class LsmEngine {
+
+    void put(Key key, Value value) {
+        // 1. Durability first: append to the WAL and (optionally) fsync
+        wal.append(key, value);
+        if (syncWrites) {
+            wal.fsync();                       // durable now — see the durability section
+        }
+
+        // 2. Insert into the sorted in-memory MemTable
+        memtable.insert(key, value);           // O(log n), keeps keys ordered
+
+        // 3. Ack: durable (WAL) AND queryable (MemTable)
+        // 4. Roll over when full
+        if (memtable.size() >= flushThreshold) {
+            rotateAndFlush();
+        }
+    }
+
+    private void rotateAndFlush() {
+        SkipList immutable = memtable;         // freeze current MemTable
+        memtable = new ConcurrentSkipListMap<>();  // new writes go here immediately
+
+        SSTable sstable = SSTable.writeSorted(immutable.iteratorSorted());  // sequential
+        levels.get(0).add(sstable);
+        wal.discardSegment(immutable.walSegment());   // safe to drop once flushed
+    }
+}
+// ConcurrentSkipListMap is the real Java memtable: sorted AND lock-free reads.
+```
+
+</details>
+
+
 Every disk touch on this path is **sequential**: the WAL append and the SSTable flush. There are no random in-place page writes. That is the entire reason LSM sustains high ingest.
 
 | Step | Where | I/O pattern | Purpose |
@@ -278,6 +336,43 @@ def get(self, key):
             return None if v.is_tombstone else v    # first hit is the newest version
     return None                                     # not found anywhere
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same read path — note the Bloom check is what saves the I/O</summary>
+
+```java
+// Illustrative LSM read path
+Value get(Key key) {
+    // 1. Newest data first: active + immutable MemTables
+    List<MemTable> tables = new ArrayList<>();
+    tables.add(memtable);
+    tables.addAll(immutableMemtables);
+
+    for (MemTable mt : tables) {
+        Value v = mt.get(key);
+        if (v != null) {
+            return v.isTombstone() ? null : v;   // newest wins; tombstone = deleted
+        }
+    }
+
+    // 2. SSTables, newest to oldest
+    for (SSTable sst : sstablesNewestToOldest()) {
+        if (!sst.bloom().mightContain(key)) {
+            continue;                            // definitely not here — no disk I/O
+        }
+        Block block = sst.index().findBlock(key);      // sparse index → one block
+        Data data   = blockCache.getOrRead(sst, block); // RAM or disk
+        Value v = data.search(key);
+        if (v != null) {
+            return v.isTombstone() ? null : v;   // first hit is the newest version
+        }
+    }
+    return null;                                 // not found anywhere
+}
+```
+
+</details>
+
 
 The three cost-reducers, in the order they help:
 
@@ -347,6 +442,43 @@ class BloomFilter:
                 return False        # a zero bit ⇒ DEFINITELY not present (no false negatives)
         return True                 # all bits set ⇒ MAYBE (could be a false positive)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — long[] and shift/mask — the standard Java bitset idiom</summary>
+
+```java
+class BloomFilter {
+    private final long[] bits;        // long[] — 64 bits per word
+    private final int m, k;
+
+    BloomFilter(int mBits, int kHashes) {
+        this.m = mBits;
+        this.k = kHashes;
+        this.bits = new long[(mBits + 63) / 64];
+    }
+
+    void add(byte[] key) {
+        for (int i = 0; i < k; i++) {
+            int pos = Math.floorMod(hash(key, i), m);
+            bits[pos >>> 6] |= (1L << (pos & 63));    // set bit; never cleared
+        }
+    }
+
+    boolean mightContain(byte[] key) {
+        for (int i = 0; i < k; i++) {
+            int pos = Math.floorMod(hash(key, i), m);
+            if ((bits[pos >>> 6] & (1L << (pos & 63))) == 0) {
+                return false;    // a zero bit ⇒ DEFINITELY not present
+            }
+        }
+        return true;             // all bits set ⇒ MAYBE (could be a false positive)
+    }
+}
+// >>> 6 is /64 and & 63 is %64 — the shift/mask idiom for bit arrays.
+```
+
+</details>
+
 
 - **No false negatives:** an added key set all `k` of its bits; bits are never cleared, so those bits are still 1 → `might_contain` cannot return False for a present key.
 - **False positives:** an absent key's `k` bits may all have been set by *other* keys → returns True wrongly. Cost = one wasted SSTable probe, not a correctness bug.
@@ -438,6 +570,38 @@ def compact(sstables):
             continue                                # drop superseded versions
         yield key, newest                           # write to the new SSTable
 ```
+
+<details>
+<summary>☕ <b>Java</b> — PriorityQueue is the k-way merge</summary>
+
+```java
+// Conceptual k-way merge at the heart of any compaction.
+// A PriorityQueue over the SSTable iterators is the standard Java shape.
+Iterator<Entry> compact(List<SSTable> sstables) {
+    PriorityQueue<PeekingIterator<Entry>> heap =
+            new PriorityQueue<>(Comparator.comparing(it -> it.peek().key()));
+
+    sstables.forEach(s -> heap.add(peeking(s.iteratorSorted())));
+
+    List<Entry> out = new ArrayList<>();
+    while (!heap.isEmpty()) {
+        List<Entry> versions = drainSameKey(heap);        // all versions of one key
+
+        Entry newest = versions.stream()
+                .max(Comparator.comparingLong(Entry::seqno))
+                .orElseThrow();
+
+        if (newest.isTombstone() && tombstoneExpired(newest)) continue;  // drop delete
+        if (isObsolete(newest))                              continue;  // drop superseded
+
+        out.add(newest);                                   // write to the new SSTable
+    }
+    return out.iterator();
+}
+```
+
+</details>
+
 
 | Axis | Size-tiered (STCS) | Leveled (LCS) |
 |---|---|---|
@@ -634,6 +798,25 @@ def commit(txn):
     ack(txn)                         # only now tell the client "committed"
     # if durability == "async": ack before fsync → faster, small loss window on crash
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same decision, enum instead of a string</summary>
+
+```java
+// The durability decision in one place
+void commit(Txn txn) {
+    wal.append(txn.records());          // sequential
+    if (durability == Durability.SYNC) {
+        wal.fsync();                    // wait for the device → durable, slower
+    }
+    ack(txn);                           // only NOW tell the client "committed"
+    // ASYNC: ack before fsync → faster, small loss window on crash.
+}
+// fsync is the boundary between "in memory" and "on stable storage".
+```
+
+</details>
+
 
 | Mode | Guarantee | Cost |
 |---|---|---|

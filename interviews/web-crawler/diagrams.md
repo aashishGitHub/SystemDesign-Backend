@@ -65,7 +65,20 @@ flowchart LR
 
 ### The 60-second narration
 
-*(one line per numbered box ①–⑧)*
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Reject "it's BFS with a queue." ~50 billion nodes, cycles and traps.
+2. The Mercator two-level trick: back queues encode politeness, one host per queue.
+3. Consistently hash the registrable domain to a worker, so each host has one owner.
+4. DNS would be the hidden bottleneck. A per-worker cache fixes it.
+5. Robots is fetched, cached ~24 h, and interpreted conservatively.
+6. Raw pages go to object storage as large batched WARC segments.
+7. Deduplication at 5 trillion URLs. An exact hash set is impossible.
+8. A second layer for near-duplicates — SimHash, Hamming distance ≤ 3.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
 
 1. **Start by rejecting "it's BFS with a queue."** The web graph has ~50 billion nodes, infinite cycles and spider traps, and wildly uneven value — so the frontier's *front* queues encode priority: source PageRank, in-link count, domain authority, URL depth (OPIC approximates this online).
 2. **The first red box is the Mercator two-level trick: back queues encode politeness, one host per queue**, with a min-heap on each host's next allowed fetch time. Priority and politeness are *separate* concerns and mixing them into one queue is the classic failure — you either crawl junk or get IP-banned.

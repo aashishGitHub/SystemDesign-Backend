@@ -89,6 +89,26 @@ def score_driver(driver, rider):
     )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+double scoreDriver(Driver driver, Rider rider) {
+    double distanceScore   = 1.0 / (1 + driver.distanceTo(rider));  // 0-1
+    double directionScore  = driver.headingToward(rider);           // 0-1
+    double ratingScore     = driver.rating() / 5.0;                 // 0-1
+    double acceptanceScore = driver.acceptanceRate();               // 0-1
+
+    return distanceScore   * 0.40
+         + directionScore  * 0.30
+         + ratingScore     * 0.20
+         + acceptanceScore * 0.10;
+}
+```
+
+</details>
+
+
 ---
 
 ### A5. Impact of 2-minute downtime
@@ -173,6 +193,29 @@ def get_nearby_drivers(rider_lat, rider_lng, redis):
     return drivers
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+List<String> getNearbyDrivers(double riderLat, double riderLng, Jedis redis) {
+    String riderCell = Geohash.encode(riderLat, riderLng, 6);
+    List<String> cellsToCheck = new ArrayList<>();
+    cellsToCheck.add(riderCell);
+    cellsToCheck.addAll(Geohash.neighbors(riderCell));   // 9 cells total
+
+    List<String> drivers = new ArrayList<>();
+    for (String cell : cellsToCheck) {
+        drivers.addAll(redis.smembers("drivers:" + cell));
+    }
+    return drivers;
+}
+// The 9-cell sweep is the point: querying only the rider's own cell
+// misses a driver standing just across a boundary.
+```
+
+</details>
+
+
 ---
 
 ### A8. Edge problem with geohash
@@ -244,6 +287,32 @@ def update_driver_location(driver_id, lat, lng, redis):
     })
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void updateDriverLocation(String driverId, double lat, double lng, Jedis redis) {
+    String newCell = Geohash.encode(lat, lng, 6);
+    String oldCell = redis.get("driver:" + driverId + ":cell");
+
+    if (oldCell != null && !oldCell.equals(newCell)) {
+        redis.srem("drivers:" + oldCell, driverId);
+    }
+
+    redis.sadd("drivers:" + newCell, driverId);
+    redis.set("driver:" + driverId + ":cell", newCell);
+
+    Map<String, String> fields = Map.of(
+            "lat",        String.valueOf(lat),
+            "lng",        String.valueOf(lng),
+            "updated_at", String.valueOf(Instant.now().getEpochSecond()));
+    redis.hset("driver:" + driverId, fields);
+}
+```
+
+</details>
+
+
 **Alternative**: Redis GEOSPATIAL commands
 
 ```bash
@@ -274,6 +343,21 @@ def get_precision(lat, lng):
     else:
         return 5
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+int getPrecision(double lat, double lng) {
+    double density = getAreaDensity(lat, lng);   // Precomputed zones
+    if (density > 1000) return 7;                // drivers per km²
+    if (density > 100)  return 6;
+    return 5;
+}
+```
+
+</details>
+
 
 **Uber's approach**: Use H3 at consistent resolution, but adjust search radius dynamically.
 
@@ -322,6 +406,41 @@ async def update_location(lat: float, lng: float, driver_id: str = Depends(get_d
     return {"ok": True}
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Spring MVC + a Jedis pipeline</summary>
+
+```java
+@PostMapping("/driver/location")
+ResponseEntity<Map<String, Boolean>> updateLocation(
+        @RequestBody LocationUpdate body,
+        @AuthenticationPrincipal Driver driver) {
+
+    String cell = Geohash.encode(body.lat(), body.lng(), 6);
+    String cellKey = "driver:" + driver.id() + ":cell";
+    String oldCell = jedis.get(cellKey);
+
+    // Pipeline: one round trip instead of four.
+    Pipeline pipe = jedis.pipelined();
+
+    if (!cell.equals(oldCell)) {
+        if (oldCell != null) pipe.srem("drivers:" + oldCell, driver.id());
+        pipe.sadd("drivers:" + cell, driver.id());
+        pipe.set(cellKey, cell);
+    }
+
+    pipe.hset("driver:" + driver.id(), Map.of(
+            "lat", String.valueOf(body.lat()),
+            "lng", String.valueOf(body.lng()),
+            "ts",  String.valueOf(Instant.now().getEpochSecond())));
+
+    pipe.sync();
+    return ResponseEntity.ok(Map.of("ok", true));
+}
+```
+
+</details>
+
+
 ---
 
 ### A13. PostgreSQL vs Redis for locations
@@ -364,6 +483,29 @@ def is_driver_available(driver_id, redis):
     return True
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+static final long STALE_THRESHOLD_SECONDS = 30;
+
+boolean isDriverAvailable(String driverId, Jedis redis) {
+    Map<String, String> location = redis.hgetAll("driver:" + driverId);
+    if (location.isEmpty()) return false;
+
+    long updatedAt = Long.parseLong(location.get("ts"));
+    if (Instant.now().getEpochSecond() - updatedAt > STALE_THRESHOLD_SECONDS) {
+        // Mark driver as offline
+        redis.srem("drivers:" + location.get("cell"), driverId);
+        return false;
+    }
+    return true;
+}
+```
+
+</details>
+
+
 **Background cleanup job**:
 ```python
 async def cleanup_stale_drivers():
@@ -376,6 +518,31 @@ async def cleanup_stale_drivers():
         
         await asyncio.sleep(10)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — scheduled executor + cursor-based SCAN</summary>
+
+```java
+// Schedule instead of a while(true) + sleep — the executor owns the cadence.
+scheduler.scheduleAtFixedRate(() -> {
+    ScanParams params = new ScanParams().match("driver:*:cell").count(500);
+    String cursor = ScanParams.SCAN_POINTER_START;
+    do {
+        ScanResult<String> result = jedis.scan(cursor, params);
+        for (String key : result.getResult()) {
+            String driverId = key.split(":")[1];
+            if (!isDriverAvailable(driverId, jedis)) {
+                log.info("Removed stale driver {}", driverId);
+            }
+        }
+        cursor = result.getCursor();
+    } while (!cursor.equals(ScanParams.SCAN_POINTER_START));
+}, 0, 10, TimeUnit.SECONDS);
+// SCAN, never KEYS — KEYS blocks the whole Redis instance.
+```
+
+</details>
+
 
 ---
 
@@ -404,6 +571,37 @@ def validate_location_update(driver_id, new_lat, new_lng, redis):
     return True
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+static final double MAX_SPEED_MPS = 50;   // 180 km/h max reasonable speed
+
+boolean validateLocationUpdate(String driverId, double newLat, double newLng, Jedis redis) {
+    Map<String, String> old = redis.hgetAll("driver:" + driverId);
+    if (old.isEmpty()) return true;                       // First update
+
+    double oldLat = Double.parseDouble(old.get("lat"));
+    double oldLng = Double.parseDouble(old.get("lng"));
+    long   oldTs  = Long.parseLong(old.get("ts"));
+
+    double distance = haversine(oldLat, oldLng, newLat, newLng);   // meters
+    long   elapsed  = Instant.now().getEpochSecond() - oldTs;
+
+    if (elapsed > 0) {
+        double speed = distance / elapsed;                // meters per second
+        if (speed > MAX_SPEED_MPS) {
+            log.warn("GPS drift detected for {}: {} m/s", driverId, speed);
+            return false;                                 // Reject update
+        }
+    }
+    return true;
+}
+```
+
+</details>
+
+
 ---
 
 ### A16. Batching vs immediate location updates
@@ -426,6 +624,25 @@ def should_send_immediately(new_location, last_sent_location):
     
     return distance > 50 or heading_change > 30
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+boolean shouldSendImmediately(Location now, Location lastSent) {
+    // Send immediately if:
+    // - Significant movement (> 50m)
+    // - Heading change > 30°
+    // - Status change (available → busy)
+    double distance      = haversine(now, lastSent);
+    double headingChange = Math.abs(now.heading() - lastSent.heading());
+
+    return distance > 50 || headingChange > 30;
+}
+```
+
+</details>
+
 
 ---
 
@@ -495,6 +712,42 @@ def compute_score(rider, driver):
     )
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Comparator.comparingDouble replaces sort-then-take-first</summary>
+
+```java
+Driver matchRiderToDriver(Rider rider, List<Driver> availableDrivers) {
+    return availableDrivers.stream()
+            .max(Comparator.comparingDouble(d -> computeScore(rider, d)))
+            .orElseThrow(() -> new NoDriversAvailableException(rider.id()));
+}
+
+double computeScore(Rider rider, Driver driver) {
+    // ETA (lower is better)
+    double eta      = computeEta(driver, rider.pickup());
+    double etaScore = 1.0 / (1 + eta / 60);            // Normalize by 60 seconds
+
+    // Distance (lower is better)
+    double distance      = haversine(driver.lat(), driver.lng(), rider.lat(), rider.lng());
+    double distanceScore = 1.0 / (1 + distance / 1000); // Normalize by 1km
+
+    // Direction (higher is better if heading toward rider)
+    double directionScore = computeHeadingAlignment(driver, rider);
+
+    double ratingScore     = driver.rating() / 5.0;
+    double acceptanceScore = driver.acceptanceRate();
+
+    return etaScore        * 0.35
+         + distanceScore   * 0.25
+         + directionScore  * 0.15
+         + ratingScore     * 0.15
+         + acceptanceScore * 0.10;
+}
+```
+
+</details>
+
+
 ---
 
 ### A19. Formal matching problem definition
@@ -552,6 +805,28 @@ def compute_heading_alignment(driver, rider):
     return 1 - (diff / 180)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+double computeHeadingAlignment(Driver driver, Rider rider) {
+    // Angle from driver to rider
+    double desiredHeading = calculateBearing(
+            driver.lat(), driver.lng(),
+            rider.lat(),  rider.lng());
+
+    // How close is the driver's current heading to desired?
+    double diff = Math.abs(driver.heading() - desiredHeading);
+    if (diff > 180) diff = 360 - diff;
+
+    // 0° diff = 1.0, 180° diff = 0.0
+    return 1 - (diff / 180);
+}
+```
+
+</details>
+
+
 ---
 
 ### A21. Incorporating ratings, acceptance, vehicle type
@@ -576,6 +851,31 @@ def compute_score(rider, driver, ride_request):
     
     return base_score + rating_bonus - acceptance_penalty
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+double computeScore(Rider rider, Driver driver, RideRequest request) {
+    // Hard filters (must match)
+    if (request.vehicleType() != driver.vehicleType()) return -1;   // Disqualify
+    if (driver.rating() < request.minRating())         return -1;   // e.g. premium riders
+
+    // Soft scoring
+    double baseScore = computeEtaDistanceScore(rider, driver);
+
+    // Rating bonus (4.9+ rating gets 10% bonus)
+    double ratingBonus = Math.max(0, (driver.rating() - 4.5) * 0.1);
+
+    // Acceptance penalty (low acceptance = less reliable)
+    double acceptancePenalty = (1 - driver.acceptanceRate()) * 0.2;
+
+    return baseScore + ratingBonus - acceptancePenalty;
+}
+```
+
+</details>
+
 
 ---
 
@@ -633,6 +933,32 @@ async def dispatch_ride(ride_request, drivers):
     return {"error": "no_drivers_available"}
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same serial offer loop</summary>
+
+```java
+Trip dispatchRide(RideRequest request, List<Driver> drivers) {
+    // Serial offers, best-scored first. Never broadcast to all at once.
+    List<Driver> ranked = drivers.stream()
+            .sorted(Comparator.comparingDouble(this::score).reversed())
+            .toList();
+
+    for (Driver driver : ranked) {
+        if (!sendOffer(driver, request)) continue;
+
+        String response = waitForResponse(driver, Duration.ofSeconds(15));
+        if ("accepted".equals(response)) {
+            return createTrip(request, driver);
+        }
+        penalizeAcceptanceRate(driver);
+    }
+    throw new NoDriversAvailableException(request.id());
+}
+```
+
+</details>
+
+
 ---
 
 ### A24. Handling driver timeout
@@ -653,6 +979,30 @@ async def wait_for_response(driver, ride_request, timeout=15):
         # Move to next driver
         return "timeout"
 ```
+
+<details>
+<summary>☕ <b>Java</b> — CompletableFuture.get with a timeout</summary>
+
+```java
+String waitForResponse(Driver driver, Duration timeout) {
+    CompletableFuture<String> pending = driverResponseChannel.get(driver.id());
+    try {
+        return pending.get(timeout.toSeconds(), TimeUnit.SECONDS);
+    } catch (TimeoutException e) {
+        // Driver didn't respond
+        recordTimeout(driver.id());
+        updateAcceptanceRate(driver.id(), false);
+        pending.cancel(true);           // stop waiting on a dead offer
+        return "timeout";               // Move to next driver
+    } catch (InterruptedException | ExecutionException e) {
+        Thread.currentThread().interrupt();
+        return "error";
+    }
+}
+```
+
+</details>
+
 
 **Acceptance rate calculation**:
 ```text
@@ -741,6 +1091,37 @@ def handle_cancellation(trip, cancelled_by, reason):
             redispatch_ride(trip)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — switch over an enum makes the state machine exhaustive</summary>
+
+```java
+CancellationResult handleCancellation(Trip trip, Actor cancelledBy, String reason) {
+    switch (trip.state()) {
+        case REQUESTED -> {
+            trip.setState(TripState.CANCELLED);
+            return new CancellationResult(Money.ZERO);
+        }
+        case MATCHED -> {
+            if (cancelledBy == Actor.RIDER) {
+                Duration since = Duration.between(trip.matchedAt(), Instant.now());
+                Money fee = since.toMinutes() > 2 ? Money.usd("5.00") : Money.ZERO;
+                trip.setState(TripState.CANCELLED);
+                chargeRider(trip.riderId(), fee);
+                return new CancellationResult(fee);
+            }
+            trip.setState(TripState.CANCELLED);
+            penalizeDriver(trip.driverId());
+            redispatchRide(trip);                       // Re-dispatch to new driver
+            return new CancellationResult(Money.ZERO);
+        }
+        default -> throw new IllegalStateException("cannot cancel from " + trip.state());
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ### A27. Driver no-show handling
@@ -764,6 +1145,34 @@ async def monitor_driver_arrival(trip):
             redispatch_ride(trip)
             return
 ```
+
+<details>
+<summary>☕ <b>Java</b> — scheduled task instead of an async sleep loop</summary>
+
+```java
+// Schedule the check rather than looping with sleep.
+void monitorDriverArrival(Trip trip) {
+    Instant maxArrival = trip.estimatedArrival().plus(Duration.ofMinutes(10));
+
+    ScheduledFuture<?>[] handle = new ScheduledFuture<?>[1];
+    handle[0] = scheduler.scheduleAtFixedRate(() -> {
+        if (trip.state() == TripState.ARRIVED) {
+            handle[0].cancel(false);                    // Driver arrived
+            return;
+        }
+        if (Instant.now().isAfter(maxArrival)) {
+            trip.setState(TripState.CANCELLED);         // Driver no-show
+            penalizeDriver(trip.driverId());
+            notifyRider(trip.riderId(), "Driver didn't arrive. Finding new driver...");
+            redispatchRide(trip);
+            handle[0].cancel(false);
+        }
+    }, 30, 30, TimeUnit.SECONDS);
+}
+```
+
+</details>
+
 
 ---
 
@@ -792,6 +1201,45 @@ def process_trip_payment(trip):
             # Block rider from new rides
             suspend_rider(trip.rider_id, reason="payment_failed")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — money as long minor units; idempotency key on the retry path</summary>
+
+```java
+void processTripPayment(Trip trip) {
+    try {
+        // The idempotency key is what makes a retry safe.
+        RequestOptions opts = RequestOptions.builder()
+                .setIdempotencyKey("trip_" + trip.id())
+                .build();
+
+        ChargeCreateParams params = ChargeCreateParams.builder()
+                .setAmount(trip.fareCents())        // long, minor units — never double
+                .setCurrency("usd")
+                .setCustomer(trip.rider().stripeId())
+                .build();
+
+        Charge charge = Charge.create(params, opts);
+        trip.setState(TripState.PAID);
+        trip.setPaymentId(charge.getId());
+
+    } catch (CardException e) {
+        trip.setState(TripState.PAYMENT_FAILED);
+        trip.incrementPaymentAttempts();
+
+        if (trip.paymentAttempts() < 3) {
+            scheduleRetry(trip, Duration.ofMinutes(60));
+        } else {
+            suspendRider(trip.riderId(), "payment_failed");
+        }
+    } catch (StripeException e) {
+        throw new PaymentSystemException(e);
+    }
+}
+```
+
+</details>
+
 
 **State after failure**: `PAYMENT_FAILED` (trip completed but not paid)
 
@@ -866,6 +1314,54 @@ def investigate_fare_dispute(trip_id):
         return {"refund": overcharge, "reason": "routing_error"}
 ```
 
+<details>
+<summary>☕ <b>Java</b> — BigDecimal for money — never double</summary>
+
+```java
+// Store detailed trip data for disputes
+record TripRoute(UUID tripId,
+                 List<LatLng> routePoints,      // GPS breadcrumbs every 5 seconds
+                 int distanceMeters,
+                 int durationSeconds,
+                 double surgeMultiplier) {}
+
+// Fares are money: compute in BigDecimal, store as long minor units.
+BigDecimal calculateFare(TripRoute route) {
+    BigDecimal baseFare  = new BigDecimal("2.50");
+    BigDecimal perKm     = new BigDecimal("1.50");
+    BigDecimal perMinute = new BigDecimal("0.25");
+
+    BigDecimal distanceKm = BigDecimal.valueOf(route.distanceMeters())
+            .divide(BigDecimal.valueOf(1000), 4, RoundingMode.HALF_UP);
+    BigDecimal minutes = BigDecimal.valueOf(route.durationSeconds())
+            .divide(BigDecimal.valueOf(60), 4, RoundingMode.HALF_UP);
+
+    return baseFare
+            .add(distanceKm.multiply(perKm))
+            .add(minutes.multiply(perMinute))
+            .multiply(BigDecimal.valueOf(route.surgeMultiplier()))
+            .setScale(2, RoundingMode.HALF_UP);
+}
+
+// Dispute resolution — recalculate from the stored route
+Optional<Refund> investigateFareDispute(UUID tripId) {
+    Trip trip = getTrip(tripId);
+    TripRoute route = getTripRoute(tripId);
+
+    BigDecimal expected = calculateFare(route);
+    BigDecimal charged  = trip.fare();
+    BigDecimal overcharge = charged.subtract(expected);
+
+    if (overcharge.compareTo(BigDecimal.ONE) > 0) {      // > $1 overcharge
+        return Optional.of(new Refund(overcharge, "routing_error"));
+    }
+    return Optional.empty();
+}
+```
+
+</details>
+
+
 ---
 
 ## Level 6 — Real-Time Tracking
@@ -905,6 +1401,46 @@ async def track_trip(websocket, trip_id):
                 "heading": location["heading"]
             })
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Spring WebSocket + Redis pub/sub</summary>
+
+```java
+// Tracking Service — Spring WebSocket handler
+class TrackTripHandler extends TextWebSocketHandler {
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws IOException {
+        UUID tripId = tripIdOf(session);
+        Trip trip = getTrip(tripId);
+
+        if (!authorize(userIdOf(session), trip)) {
+            session.close(CloseStatus.POLICY_VIOLATION);
+            return;
+        }
+
+        // Own thread: Jedis subscribe() blocks.
+        subscribers.submit(() -> {
+            try (Jedis jedis = pool.getResource()) {
+                jedis.subscribe(new JedisPubSub() {
+                    @Override
+                    public void onMessage(String channel, String message) {
+                        Location loc = json.readValue(message, Location.class);
+                        send(session, Map.of(
+                                "type",    "driver_location",
+                                "lat",     loc.lat(),
+                                "lng",     loc.lng(),
+                                "heading", loc.heading()));
+                    }
+                }, "trip:" + tripId + ":location");
+            }
+        });
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -974,6 +1510,33 @@ async def track_trip(websocket, trip_id):
         await websocket.send_json(update)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — sync-then-stream, same shape</summary>
+
+```java
+@Override
+public void afterConnectionEstablished(WebSocketSession session) throws IOException {
+    UUID tripId = tripIdOf(session);
+
+    // On connect, send current state — never make the client wait for the
+    // next delta to learn where things stand.
+    Trip trip = getTrip(tripId);
+    Location driverLocation = getDriverLocation(trip.driverId());
+
+    send(session, Map.of(
+            "type",            "sync",
+            "trip_state",      trip.state(),
+            "driver_location", driverLocation,
+            "eta",             trip.eta()));
+
+    // Then subscribe to updates
+    subscribeToTrip(tripId, update -> send(session, update));
+}
+```
+
+</details>
+
+
 ---
 
 ### A35. Reducing WebSocket data
@@ -995,6 +1558,28 @@ def should_send_location(new_location, last_sent, trip_state):
     
     return False
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+boolean shouldSendLocation(Location now, Location lastSent, TripState state) {
+    if (state == TripState.IN_PROGRESS) {
+        return true;                        // During trip: send every update
+    }
+
+    // Pre-pickup: only send if moved significantly
+    if (haversine(now, lastSent) > 20) {    // meters
+        return true;
+    }
+
+    // Or if 10 seconds passed
+    return Duration.between(lastSent.timestamp(), Instant.now()).getSeconds() > 10;
+}
+```
+
+</details>
+
 
 **Compression**: Use binary protocol (Protobuf) instead of JSON.
 
@@ -1044,6 +1629,30 @@ def compute_surge_multiplier(zone, time_window_minutes=5):
         return min(ratio, 5.0)  # Cap at 5x
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Math.min handles the infinity case without a branch</summary>
+
+```java
+double computeSurgeMultiplier(String zone, int windowMinutes) {
+    int supply   = countAvailableDrivers(zone);                  // available drivers
+    int demand   = countRecentRequests(zone, windowMinutes);     // requests in window
+    int capacity = countCompletedRides(zone, windowMinutes);     // actual capacity
+
+    double ratio = (supply == 0)
+            ? Double.POSITIVE_INFINITY
+            : (double) demand / supply;
+
+    if (ratio < 1.0) return 1.0;            // No surge
+    if (ratio < 1.5) return 1.2;
+    if (ratio < 2.0) return 1.5;
+    if (ratio < 3.0) return 2.0;
+    return Math.min(ratio, 5.0);            // Cap at 5x
+}
+```
+
+</details>
+
+
 ---
 
 ### A37. Zone-based surge (not per-ride)
@@ -1068,6 +1677,22 @@ async def compute_all_surges():
             redis.set(f"surge:{zone}", surge, ex=60)  # 60s TTL
         await asyncio.sleep(30)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same cadence, scheduled rather than looped</summary>
+
+```java
+// Pre-compute surge for all zones on a fixed cadence.
+scheduler.scheduleAtFixedRate(() -> {
+    for (String zone : getActiveZones()) {          // Zones with recent activity
+        double surge = computeSurgeMultiplier(zone, 5);
+        jedis.setex("surge:" + zone, 60, String.valueOf(surge));   // 60s TTL
+    }
+}, 0, 30, TimeUnit.SECONDS);
+```
+
+</details>
+
 
 ---
 
@@ -1104,6 +1729,28 @@ def update_surge_realtime(zone, event):
         redis.incr(f"supply:{zone}")
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void updateSurgeRealtime(String zone, SurgeEvent event) {
+    switch (event) {
+        case RIDE_REQUESTED -> {
+            jedis.incr("demand:" + zone);
+            if (shouldRecalculate(zone)) {          // spike detected
+                double newSurge = computeSurgeMultiplier(zone, 5);
+                jedis.set("surge:" + zone, String.valueOf(newSurge));
+                publishSurgeUpdate(zone, newSurge); // Notify pricing service
+            }
+        }
+        case DRIVER_AVAILABLE -> jedis.incr("supply:" + zone);
+    }
+}
+```
+
+</details>
+
+
 ---
 
 ### A39. Preventing surge oscillation
@@ -1135,6 +1782,34 @@ def update_surge_with_smoothing(zone, computed_surge):
     redis.set(f"surge:{zone}", smoothed)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void updateSurgeWithSmoothing(String zone, double computedSurge) {
+    String raw = jedis.get("surge:" + zone);
+    double oldSurge = (raw == null) ? 1.0 : Double.parseDouble(raw);
+
+    // Exponential smoothing — stops the price flickering between polls.
+    double smoothed = (oldSurge * 0.7) + (computedSurge * 0.3);
+
+    // Cooldown: don't decrease if there was a recent spike
+    if (smoothed < oldSurge) {
+        String spikeAt = jedis.get("surge_spike:" + zone);
+        if (spikeAt != null) {
+            Instant last = Instant.parse(spikeAt);
+            if (Duration.between(last, Instant.now()).toMinutes() < 5) {
+                smoothed = oldSurge;                // Maintain current surge
+            }
+        }
+    }
+    jedis.set("surge:" + zone, String.valueOf(smoothed));
+}
+```
+
+</details>
+
+
 ---
 
 ### A40. Surge fraud prevention
@@ -1157,6 +1832,29 @@ def detect_surge_gaming(driver_id):
     if surge_online_ratio > 0.8:  # 80% of logins during surge
         flag_for_review(driver_id, "potential_surge_gaming")
 ```
+
+<details>
+<summary>☕ <b>Java</b> — stream + the empty-list guard the Python version lacks</summary>
+
+```java
+void detectSurgeGaming(String driverId) {
+    List<OnlineEvent> events = getDriverOnlineEvents(driverId, Duration.ofDays(30));
+    if (events.isEmpty()) return;                   // avoid divide-by-zero
+
+    long surgeLogins = events.stream()
+            .filter(e -> getSurgeAtTime(e.zone(), e.timestamp()) > 1.5)
+            .count();
+
+    double ratio = (double) surgeLogins / events.size();
+
+    if (ratio > 0.8) {                              // 80% of logins during surge
+        flagForReview(driverId, "potential_surge_gaming");
+    }
+}
+```
+
+</details>
+
 
 **Prevention**:
 - Require minimum online time to be eligible for surge
@@ -1218,6 +1916,38 @@ async def dispatch_ride_with_fallback(ride_request):
         logger.error("Complete matching failure")
         return None
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note the interrupt is restored, not swallowed</summary>
+
+```java
+Driver dispatchRideWithFallback(RideRequest request) {
+    try {
+        // Primary: full matching, hard-bounded at 1 second
+        return matchingService.matchAsync(request)
+                              .get(1, TimeUnit.SECONDS);
+    } catch (TimeoutException e) {
+        log.warn("Matching service slow, degrading");
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return null;
+    } catch (ExecutionException e) {
+        log.warn("Matching service failed, degrading", e);
+    }
+
+    try {
+        // Fallback: simple nearest driver
+        List<Driver> drivers = getNearbyDrivers(request.pickup());
+        return drivers.isEmpty() ? null : drivers.get(0);
+    } catch (Exception e) {
+        log.error("Complete matching failure", e);
+        return null;
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -1286,6 +2016,29 @@ def match_pool_ride(new_rider, active_pools):
     return create_new_pool(new_rider)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — guard clauses flatten the nesting</summary>
+
+```java
+Pool matchPoolRide(Rider newRider, List<Pool> activePools) {
+    for (Pool pool : activePools) {
+        if (!canAddRider(pool, newRider))             continue;
+        if (pool.seatsAvailable() <= 0)               continue;
+
+        Duration detour = calculateDetour(pool.currentRoute(), newRider);
+        if (detour.compareTo(MAX_DETOUR) >= 0)        continue;
+
+        pool.addRider(newRider);
+        pool.recalculateRoute();
+        return pool;
+    }
+    return createNewPool(newRider);                   // No matching pool
+}
+```
+
+</details>
+
+
 ---
 
 ### QB2. ETA prediction
@@ -1318,6 +2071,32 @@ def predict_eta(driver, pickup):
     return base_eta * traffic_factor * ml_correction
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Duration keeps the unit in the type</summary>
+
+```java
+Duration predictEta(Driver driver, LatLng pickup) {
+    // Base ETA from routing engine
+    Duration baseEta = routingService.getEta(driver.location(), pickup);
+
+    // Adjust for traffic
+    double trafficFactor = trafficService.getDelayFactor(driver.location(), pickup);
+
+    // ML correction from historical data
+    double mlCorrection = etaModel.predict(new EtaFeatures(
+            LocalDateTime.now().getHour(),
+            LocalDateTime.now().getDayOfWeek(),
+            driver.historicalSpeed(),
+            routeComplexity(driver.location(), pickup)));
+
+    long seconds = Math.round(baseEta.getSeconds() * trafficFactor * mlCorrection);
+    return Duration.ofSeconds(seconds);
+}
+```
+
+</details>
+
+
 ---
 
 ### QB3. Fraud detection
@@ -1346,6 +2125,27 @@ def finalize_cash_trip(trip):
         trip.fare * COMMISSION_RATE
     )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic, money in BigDecimal</summary>
+
+```java
+void finalizeCashTrip(Trip trip) {
+    trip.setPaymentMethod(PaymentMethod.CASH);
+    trip.setState(TripState.AWAITING_CASH);
+
+    // Driver confirms cash received in app; rider prompted to rate.
+    // Commission comes out of the driver's balance, not the rider's card.
+    BigDecimal commission = trip.fare()
+            .multiply(COMMISSION_RATE)
+            .setScale(2, RoundingMode.HALF_UP);
+
+    deductFromDriverBalance(trip.driverId(), commission);
+}
+```
+
+</details>
+
 
 ---
 
@@ -1381,6 +2181,27 @@ def select_driver_fairly(drivers, ride_request):
     top_drivers = sorted(drivers, key=lambda d: d.fairness_score)[:5]
     return random.choice(top_drivers)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — score inline in the Comparator, no mutable field on Driver</summary>
+
+```java
+Driver selectDriverFairly(List<Driver> drivers, RideRequest request) {
+    // Randomize among top candidates so the same driver isn't always picked.
+    List<Driver> topFive = drivers.stream()
+            .sorted(Comparator.comparingDouble(d ->
+                    timeSinceLastRide(d) * 0.3
+                  + proximityScore(d, request) * 0.5
+                  + ratingScore(d) * 0.2))
+            .limit(5)
+            .toList();
+
+    return topFive.get(ThreadLocalRandom.current().nextInt(topFive.size()));
+}
+```
+
+</details>
+
 
 ---
 

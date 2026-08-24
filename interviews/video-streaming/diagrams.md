@@ -550,6 +550,20 @@ flowchart LR
 
 ### The 60-second narration
 
+*(the whole system, one short line per numbered box — say this end to end)*
+
+1. Bytes never go through my app server. A presigned S3 multipart upload.
+2. The pipeline is triggered by the S3 event, not the client's "I'm done" call.
+3. `uploaded ≠ streamable`. Only the worker marks the title ready.
+4. The player asks metadata "is it ready, and where", then talks only to the CDN.
+5. ABR is a client-side control loop, switching rendition at the next segment boundary.
+6. DRM separates content from keys. Never store keys next to segments.
+7. Watch progress is the sleeper problem: 40M writes/s can't touch a database.
+
+### The 3-minute walkthrough
+
+*(the same flow with the reasoning attached — this is what you say during the architecture block, while drawing)*
+
 *(one line per numbered edge)*
 
 1. **Bytes never go through my app server.** A presigned S3 multipart upload gives resumability on a 10 GB file and keeps my API out of the data path.

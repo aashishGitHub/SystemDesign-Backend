@@ -45,6 +45,24 @@ def place_order(cart, card):
     orders.mark_confirmed(order.id)            # 6. our DB
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void placeOrder(Cart cart, Card card) {
+    Order  order  = orders.create(cart);                     // 1. our DB
+    Charge charge = stripe.charge(card, cart.total());        // 2. external, non-idempotent by default
+    inventory.reserve(cart.items());                          // 3. another service
+    warehouse.createShipment(order.id());                     // 4. another service
+    email.sendConfirmation(order);                            // 5. external, irreversible
+    orders.markConfirmed(order.id());                         // 6. our DB
+}
+// Six steps, no transaction spanning them. A crash after step 2 charges the
+// customer for an order that never ships.
+```
+
+</details>
+
 Now enumerate reality:
 
 | What happens | Consequence |
@@ -225,6 +243,38 @@ def place_order(cart, card):
     yield activity(send_email, order)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — Temporal Java SDK — the same durable workflow</summary>
+
+```java
+@WorkflowInterface
+public interface OrderWorkflow {
+    @WorkflowMethod
+    void placeOrder(Cart cart, Card card);
+}
+
+public class OrderWorkflowImpl implements OrderWorkflow {
+
+    // Retries + timeouts are config, not code you write.
+    private final OrderActivities acts = Workflow.newActivityStub(
+            OrderActivities.class,
+            ActivityOptions.newBuilder()
+                    .setStartToCloseTimeout(Duration.ofSeconds(30))
+                    .build());
+
+    @Override
+    public void placeOrder(Cart cart, Card card) {
+        Order  order  = acts.createOrder(cart);                  // each result is
+        Charge charge = acts.chargeCard(card, cart.total());      // durably recorded
+        acts.reserveStock(cart.items());
+        acts.createShipment(order.id());
+        acts.sendEmail(order);
+    }
+}
+```
+
+</details>
+
 **How it works** — this is the part to be able to explain:
 
 1. Workflow code runs and each `activity` call's **input and result are appended to a durable event history**.
@@ -255,6 +305,20 @@ db.commit(order)                 # ✅ committed
 bus.publish("OrderCreated", …)   # ❌ crashes here
 # → order exists, nobody downstream knows. Forever.
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same dual-write hazard</summary>
+
+```java
+db.commit(order);                      // ✅ committed
+bus.publish("OrderCreated", event);    // ❌ crashes here
+// → order exists, nobody downstream knows. Forever.
+//
+// No Java construct fixes this either — @Transactional does not span
+// the DB and the broker. You need the outbox.
+```
+
+</details>
 
 Reversing the order just moves the bug (event published for an order that doesn't exist). You cannot atomically write to two systems without a transaction spanning both — which is the very thing you rejected in §3.
 

@@ -56,6 +56,29 @@ def signup(user_data):
     return user
 ```
 
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+// Synchronous (bad) — user waits for the email to send
+User signup(UserData data) {
+    User user = db.createUser(data);
+    emailService.sendWelcomeEmail(user.email());   // Takes 2 seconds!
+    return user;
+}
+
+// Asynchronous (good) — user gets an instant response
+User signup(UserData data) {
+    User user = db.createUser(data);
+    kafka.send(new ProducerRecord<>("user.created",
+            json.writeValueAsString(Map.of("user_id", user.id()))));
+    return user;
+}
+```
+
+</details>
+
+
 ---
 
 ### A3. Decoupling in message queues
@@ -165,6 +188,26 @@ consumer = KafkaConsumer(
     bootstrap_servers=['kafka:9092']
 )
 ```
+
+<details>
+<summary>☕ <b>Java</b> — Kafka Java client config</summary>
+
+```java
+Properties props = new Properties();
+props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka:9092");
+props.put(ConsumerConfig.GROUP_ID_CONFIG, "order-processors");   // Consumer group
+props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+
+KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+consumer.subscribe(List.of("orders"));
+
+// Or, in Spring:
+// @KafkaListener(topics = "orders", groupId = "order-processors")
+```
+
+</details>
+
 
 ---
 
@@ -276,6 +319,32 @@ def process_payment(event):
     db.record_payment(idempotency_key, payment.id)
 ```
 
+<details>
+<summary>☕ <b>Java</b> — @Transactional binds the dedup record to the business write</summary>
+
+```java
+@Transactional
+void processPayment(OrderEvent event) {
+    String idempotencyKey = event.orderId();       // dedup key
+
+    if (db.paymentExists(idempotencyKey)) {
+        return;                                    // Already processed, skip
+    }
+
+    // The payment API deduplicates on the same key — belt and braces.
+    RequestOptions opts = RequestOptions.builder()
+            .setIdempotencyKey(idempotencyKey)
+            .build();
+    Charge payment = Charge.create(chargeParams(event.amountCents()), opts);
+
+    // Recorded inside the SAME transaction as the business logic.
+    db.recordPayment(idempotencyKey, payment.getId());
+}
+```
+
+</details>
+
+
 ---
 
 ### A13. Kafka exactly-once semantics (EOS)
@@ -324,6 +393,31 @@ def process_order(order_id):
     balance -= order.amount
     processed_orders.add(order_id)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — an in-memory Set doesn't survive a restart — use the DB constraint</summary>
+
+```java
+// Non-idempotent (dangerous)
+void processOrder(String orderId) {
+    balance -= order.amount();          // Each redelivery deducts again!
+}
+
+// Idempotent (safe) — the guard must be atomic and durable, not a HashSet.
+@Transactional
+void processOrder(String orderId) {
+    // INSERT .. ON CONFLICT DO NOTHING; 0 rows ⇒ we've seen this already.
+    int inserted = jdbc.update(
+            "INSERT INTO processed_orders(order_id) VALUES (?) ON CONFLICT DO NOTHING",
+            orderId);
+    if (inserted == 0) return;          // Already done
+
+    balance -= order.amount();
+}
+```
+
+</details>
+
 
 **Idempotency strategies**:
 | Strategy | How |
@@ -397,6 +491,23 @@ producer.send('orders', key='user_456', value=order3)
 # order3 may be consumed before order1 or order2
 ```
 
+<details>
+<summary>☕ <b>Java</b> — the key is the second ProducerRecord argument</summary>
+
+```java
+// Same key → same partition → ordered
+producer.send(new ProducerRecord<>("orders", "user_123", order1));
+producer.send(new ProducerRecord<>("orders", "user_123", order2));
+// Guaranteed: order1 before order2 for user_123
+
+// Different key → possibly a different partition → no ordering guarantee
+producer.send(new ProducerRecord<>("orders", "user_456", order3));
+// order3 may be consumed before order1 or order2
+```
+
+</details>
+
+
 ---
 
 ### A18. Kafka offsets
@@ -422,6 +533,20 @@ consumer.poll()
 process_messages()
 consumer.commit()  # Mark as processed
 ```
+
+<details>
+<summary>☕ <b>Java</b> — commit AFTER processing decides your failure mode</summary>
+
+```java
+// Manual offset commit — autoCommit must be off:
+//   props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+processMessages(records);
+consumer.commitSync();     // Mark as processed — AFTER processing, always.
+```
+
+</details>
+
 
 ---
 
@@ -612,6 +737,23 @@ def create_order(order_data):
     # If step 1 fails after step 2, event exists but no order!
 ```
 
+<details>
+<summary>☕ <b>Java</b> — and note @Transactional cannot save you here</summary>
+
+```java
+// DANGEROUS: dual write
+void createOrder(OrderData data) {
+    db.save(order);                                      // Step 1: DB write
+    kafka.send(new ProducerRecord<>("order.created", order));  // Step 2: queue write
+    // If step 2 fails, the DB has the order but no event.
+    // If step 1 rolls back after step 2, the event exists but no order.
+    // @Transactional does NOT help — Kafka isn't in the DB transaction.
+}
+```
+
+</details>
+
+
 **Solution**: Write everything to DB in one transaction.
 
 ```python
@@ -625,6 +767,25 @@ def create_order(order_data):
         ))
     # Single atomic transaction
 ```
+
+<details>
+<summary>☕ <b>Java</b> — single atomic transaction</summary>
+
+```java
+// SAFE: transactional outbox — one local transaction, two rows.
+@Transactional
+void createOrder(OrderData data) {
+    Order order = db.save(data);
+
+    db.save(new OutboxEvent(
+            "order.created",
+            json.writeValueAsString(order)));
+}
+// Both rows commit or neither does. A relay publishes the outbox later.
+```
+
+</details>
+
 
 ---
 
@@ -661,6 +822,37 @@ class OutboxProcessor:
                 # Will retry on next poll
                 pass
 ```
+
+<details>
+<summary>☕ <b>Java</b> — note the .get() — send() is async, and fire-and-forget loses events</summary>
+
+```java
+// Outbox processor
+class OutboxProcessor {
+
+    void process() {
+        // FOR UPDATE SKIP LOCKED lets many relay instances run safely.
+        List<OutboxEvent> events = jdbc.query("""
+                SELECT * FROM outbox WHERE sent = false
+                ORDER BY created_at LIMIT 100
+                FOR UPDATE SKIP LOCKED
+                """, outboxMapper);
+
+        for (OutboxEvent event : events) {
+            try {
+                kafka.send(new ProducerRecord<>(event.topic(), event.payload())).get();
+                jdbc.update("UPDATE outbox SET sent = true WHERE id = ?", event.id());
+            } catch (Exception e) {
+                log.warn("publish failed, will retry on next poll", e);
+                // deliberately swallowed — the row stays unsent
+            }
+        }
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -714,6 +906,43 @@ class PaymentWebhookConsumer:
         return base * (2 ** retry_count) + random.uniform(0, 1)  # Add jitter
 ```
 
+<details>
+<summary>☕ <b>Java</b> — transient vs permanent as distinct exception types</summary>
+
+```java
+class PaymentWebhookConsumer {
+    private static final int MAX_RETRIES = 5;
+
+    void process(ConsumerRecord<String, String> message) {
+        int retryCount = intHeader(message, "retry_count", 0);
+
+        try {
+            handlePayment(message);
+            commit(message);
+        } catch (TransientException e) {
+            if (retryCount >= MAX_RETRIES) {
+                sendToDlq(message);
+            } else {
+                requeueWithDelay(message, calculateBackoff(retryCount), retryCount + 1);
+            }
+        } catch (PermanentException e) {
+            sendToDlq(message);      // retrying will never help
+        }
+    }
+
+    /** Exponential: 1s, 2s, 4s, 8s, 16s — plus jitter. */
+    Duration calculateBackoff(int retryCount) {
+        long base = (long) Math.pow(2, retryCount) * 1000;
+        long jitter = ThreadLocalRandom.current().nextLong(0, 1000);
+        return Duration.ofMillis(base + jitter);
+    }
+}
+// Without jitter, retries resynchronize into a thundering herd on recovery.
+```
+
+</details>
+
+
 ---
 
 ### A32. Event sourcing
@@ -761,6 +990,34 @@ def process_with_poison_handling(message):
         increment_attempt_count(message.id)
         # Message will be redelivered
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same logic</summary>
+
+```java
+void processWithPoisonHandling(ConsumerRecord<String, String> message) {
+    long attempts = getAttemptCount(message.key());
+
+    if (attempts > MAX_ATTEMPTS) {
+        log.error("Poison message detected: {}", message.key());
+        sendToDlq(message);
+        commit(message);                 // Remove from the main queue
+        alert("Poison message", message);
+        return;
+    }
+
+    try {
+        process(message);
+        commit(message);
+    } catch (Exception e) {
+        incrementAttemptCount(message.key());
+        // Not committed → the message will be redelivered.
+    }
+}
+```
+
+</details>
+
 
 ---
 
@@ -1026,6 +1283,44 @@ class OrderSaga:
         
         return self.success(order)
 ```
+
+<details>
+<summary>☕ <b>Java</b> — same saga, compensations explicit</summary>
+
+```java
+// Saga orchestrator — every failure branch compensates what already ran.
+class OrderSaga {
+
+    SagaResult execute(Order order) {
+        if (!inventory.reserve(order)) {
+            return SagaResult.fail("out_of_stock");
+        }
+
+        Payment payment;
+        try {
+            payment = this.payment.charge(order);
+        } catch (PaymentFailedException e) {
+            inventory.release(order);                 // Compensate
+            return SagaResult.fail("payment_failed");
+        }
+
+        try {
+            shipping.create(order);
+        } catch (ShippingFailedException e) {
+            this.payment.refund(payment);             // Compensate
+            inventory.release(order);                 // Compensate
+            return SagaResult.fail("shipping_failed");
+        }
+
+        return SagaResult.success(order);
+    }
+}
+// Note there is no rollback — only forward-written compensations,
+// and each one must be idempotent.
+```
+
+</details>
+
 
 ---
 
