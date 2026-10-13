@@ -13,19 +13,19 @@
 | Category | Total Topics | ✅ Done | 🔄 In Progress | 🔲 Not Started |
 |---|---|---|---|---|
 | Core Patterns | 12 | 9 | 1 | 2 |
-| Classic Problems | 19 | 11 | 3 | 5 |
+| Classic Problems | 19 | 12 | 3 | 4 |
 | Advanced Topics | 6 | 1 | 0 | 5 |
-| **Total** | **37** | **21** | **4** | **12** |
+| **Total** | **37** | **22** | **4** | **11** |
 
 > **In Progress** = has README + questions + answers, deep-dive.md pending: `cdn-edge`, `url-shortener`, `web-crawler`, `search-autocomplete`.
 
-### 🎯 Master-diagram coverage — **29 / 29 topic folders complete**
+### 🎯 Master-diagram coverage — **30 / 30 topic folders complete**
 
 Every topic folder now ends its `diagrams.md` with the **🎯 One-Page Master Diagram** ([`docs/instructions.md` §2.1](../docs/instructions.md)) — the single artifact to revise from the night before and reproduce on the whiteboard. Each one carries: the central split in one sentence · the master Mermaid diagram (numbered flow, AWS + pattern annotations, red on the 2–3 hard parts) · a **60-second narration** (one ≤15-word line per numbered box) and a **3-minute walkthrough** (the same edges, with the reasoning) · the five numbers that justify the design, with derivations · the patterns it assembles · the three things that break, with blast radius / mitigation / detection · and an **AWS traps to name unprompted** table.
 
 | | Folders |
 |---|---|
-| **Master diagram ✅** | all 29 — every `interviews/*/diagrams.md` |
+| **Master diagram ✅** | all 30 — every `interviews/*/diagrams.md` |
 | **+ optional 30-min spoken transcript** ([§2.2](../docs/instructions.md)) | `seat-reservation`, `food-delivery` |
 | **Full numbered diagram set (Diagrams 1–N) still to author** | the 20 folders whose `diagrams.md` currently holds the master diagram only — noted in each file's header |
 | **Non-standard folder** | `sse` — a production-experience deep dive (no `questions.md`/`answers.md`/`README.md`); has a master diagram keyed to its own Q&A |
@@ -537,7 +537,7 @@ Bigtable (Google), Dynamo (Amazon), and Spanner (Google) are the foundation of c
 ---
 
 ### Problem 13 — Ad Click Aggregation (like Google Ads)
-**Status:** 🔲 Not Started | **Priority:** P2 | **Folder:** `interviews/ad-click-aggregation/`
+**Status:** ✅ Done | **Priority:** P2 | **Folder:** `interviews/ad-click-aggregation/`
 
 **What it covers:**
 High-throughput event ingestion. Time-windowed aggregation (tumbling, sliding windows). Approximate counting (Count-Min Sketch, HyperLogLog). Exactly-once aggregation. Lambda vs Kappa architecture. Aggregation at multiple time granularities. Real-time vs batch tradeoffs. Reporting API design. Click fraud detection. Attribution modeling.
@@ -548,10 +548,10 @@ High-throughput event ingestion. Time-windowed aggregation (tumbling, sliding wi
 Google's core revenue is ads. Aggregating ad clicks at billions-per-day scale is an internal Google problem. This tests stream processing and probabilistic data structures.
 
 **Creation checklist:**
-- [ ] `README.md`
-- [ ] `questions.md`
-- [ ] `answers.md`
-- [ ] `deep-dive.md`
+- [x] `README.md`
+- [x] `questions.md`
+- [x] `answers.md`
+- [x] `deep-dive.md`
 
 ---
 
@@ -760,7 +760,7 @@ Inverted index construction. TF-IDF vs BM25 scoring. PageRank. Indexing pipeline
 | 20 | Search Autocomplete | Problem | P2 | 🔄 | Caching, Hashing |
 | 21 | Notification System | Problem | P2 | ✅ | Queues, Rate Limiting |
 | 22 | Distributed KV Store | Problem | P2 | ✅ | Hashing, Replication |
-| 23 | Ad Click Aggregation | Problem | P2 | 🔲 | Kafka, Stream Processing |
+| 23 | Ad Click Aggregation | Problem | P2 | ✅ | Kafka, Stream Processing |
 | 24 | Leaderboard / Top-K | Problem | P2 | 🔲 | Caching (Redis) |
 | 25 | Job Scheduler | Problem | P2 | 🔲 | Distributed Locking |
 | 26 | Payment System (Stripe/PayPal) | Problem | **P1** | ✅ | Distributed Transactions, Message Queues |

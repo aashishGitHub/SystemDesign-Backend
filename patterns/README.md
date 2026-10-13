@@ -64,6 +64,7 @@ The way to use this folder under time pressure. **●** = central to the problem
 | [Consistent hashing](../interviews/consistent-hashing/README.md) | ● | | | ○ | ● | | | ○ |
 | [Distributed transactions](../interviews/distributed-transactions/README.md) | | ● | ● | | | | | ○ |
 | [Message queues](../interviews/message-queues/README.md) | | | ● | | ● | | ● | |
+| [Ad click aggregation / telemetry](../interviews/ad-click-aggregation/README.md) | ○ | | ○ | | ● | | ○ | |
 | [API design](../interviews/api-design/README.md) | ○ | ○ | ● | ● | | ○ | ● |
 | [Communication protocols](../interviews/communication-protocols/README.md) | ● | | ○ | | ○ | | ○ | |
 | [Observability](../interviews/observability/README.md) | | | | ○ | ● | | ● | |
@@ -91,7 +92,7 @@ The eight above are the *written* patterns. Auditing the [`interviews/`](../inte
 | Gap pattern | Existing authoritative depth | Partially covered by |
 |---|---|---|
 | Proximity / geospatial | [ride-sharing](../interviews/ride-sharing/deep-dive.md) (geohash/S2/H3, cell-size tradeoff), [food-delivery](../interviews/food-delivery/deep-dive.md) | — this is the **largest true gap**; no pattern file covers it at all |
-| Counting & top-K | [social-feed](../interviews/social-feed/deep-dive.md) (feed counts), [rate-limiting](../interviews/rate-limiting/deep-dive.md) (windowed counters), [observability](../interviews/observability/deep-dive.md) (cardinality) | [scaling-writes.md](./scaling-writes.md) covers *aggregate before you write*, but not top-K or probabilistic structures |
+| Counting & top-K | [ad-click-aggregation](../interviews/ad-click-aggregation/deep-dive.md) §4 (Count-Min Sketch, HyperLogLog — now the authoritative depth), [social-feed](../interviews/social-feed/deep-dive.md) (feed counts), [rate-limiting](../interviews/rate-limiting/deep-dive.md) (windowed counters), [observability](../interviews/observability/deep-dive.md) (cardinality) | [scaling-writes.md](./scaling-writes.md) covers *aggregate before you write*, but not top-K or probabilistic structures |
 | Scheduled & delayed execution | [notification-system](../interviews/notification-system/deep-dive.md) (reminders), [seat-reservation](../interviews/seat-reservation/deep-dive.md) (hold expiry) | [long-running-tasks.md](./long-running-tasks.md) covers async *work*, not *time-triggered* work |
 | Search & ranked retrieval | [search-autocomplete](../interviews/search-autocomplete/deep-dive.md), [recommendation-system](../interviews/recommendation-system/deep-dive.md) (two-stage ranking) | [scaling-reads.md](./scaling-reads.md) covers precomputation and derived stores generically |
 
@@ -112,12 +113,12 @@ The eight above are the *written* patterns. Auditing the [`interviews/`](../inte
 | [Seat reservation](../interviews/seat-reservation/README.md) | | | ● | |
 | [Rate limiting](../interviews/rate-limiting/README.md) | | ● | ○ | |
 | [Observability](../interviews/observability/README.md) | | ● | ○ | ○ |
-| Ad click aggregation *(not built)* | | ● | | |
+| [Ad click aggregation](../interviews/ad-click-aggregation/README.md) | | ● | | |
 | Leaderboard / top-K *(not built)* | | ● | | |
 | Job scheduler *(not built)* | | | ● | |
 | Search engine *(not built)* | | ○ | | ● |
 
-Note how strongly the gaps cluster on the **unbuilt** topics (ad-click aggregation, leaderboard, job scheduler, maps, search engine). That's not a coincidence — those topics are unbuilt *because* their central pattern was never written down. Building any of them should start by writing its pattern file.
+Note how strongly the gaps cluster on the **unbuilt** topics (leaderboard, job scheduler, maps, search engine). That's not a coincidence — those topics are unbuilt *because* their central pattern was never written down. Building any of them should start by writing its pattern file. `ad-click-aggregation` was the first of this cluster to get built (2026-09-21), and it now carries the authoritative depth for the Counting & top-K gap above — the gap pattern itself is still not a standalone `patterns/` file.
 
 ### AWS realization
 

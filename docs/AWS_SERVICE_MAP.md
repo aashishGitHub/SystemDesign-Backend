@@ -264,6 +264,7 @@ The fast index. Each links to the topic's own depth; the AWS names are **defensi
 | [CDN & edge](../interviews/cdn-edge/README.md) | CloudFront + origin shield · Lambda@Edge / CloudFront Functions · versioned keys over invalidation |
 | [KV store](../interviews/kv-store/README.md) | DynamoDB as the worked example (partition key, GSIs, Streams, Global Tables) · Keyspaces if Cassandra semantics are required |
 | [Message queues](../interviews/message-queues/README.md) | The §1.4 table *is* this topic: SQS vs SNS vs EventBridge vs Kinesis vs MSK |
+| [Ad click aggregation / telemetry](../interviews/ad-click-aggregation/README.md) | MSK/Kinesis event log (key=session_id) · Managed Flink or Kafka Streams for windowed + sketch aggregation · ElastiCache for hot counters + idempotency store · S3 raw archive · EMR/Spark for exact batch recompute · OpenSearch for ad-hoc query |
 | [Distributed transactions](../interviews/distributed-transactions/README.md) | Step Functions saga · DynamoDB Streams outbox · DynamoDB conditional put for idempotency |
 | [Observability](../interviews/observability/README.md) | CloudWatch metrics/alarms · Logs Insights · X-Ray or ADOT/OTel · CloudTrail audit · FIS for chaos |
 | [Search autocomplete](../interviews/search-autocomplete/README.md) | Trie snapshot in ElastiCache (cheap) or OpenSearch completion suggester · CloudFront for the prefix API |
