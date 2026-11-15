@@ -35,9 +35,8 @@ unit with no public API surface except `cp-open-api`.
 | `cp-open-api` | 8084 | External users, Terraform provider | Public Management API v4, OpenAPI-generated |
 | `cp-internal-api` | 8081 | DP agents | **The only** CP↔DP door |
 | `cp-idp-gateway` | 8088 | `idp-ui` | Internal Developer Platform for Couchbase engineers |
-| `cp-worker` | — | — | Background worker. Does the long provisioning work. |
 | `cp-scheduler` | — | — | Job scheduler |
-| `cp-jobs` | — | — | Scheduled jobs (billing runs, cleanup) |
+| `cp-jobs` | — | — | **The background worker.** Consumes SQS and runs job processors: long provisioning work, plus scheduled jobs (billing runs, cleanup). Root `AGENTS.md` names a `cp-worker`; no such binary exists (see [06](06-slice-02-cluster-provisioning.md) Part 4). |
 | `cp-ns` | — | — | Notification service |
 | `cp-bot` | — | — | Slack bot |
 | `cp-fm-gateway` | — | — | Fleet Manager gateway (support tooling) |

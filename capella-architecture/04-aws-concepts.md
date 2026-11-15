@@ -433,7 +433,7 @@ What each is for, and the concept it teaches:
 
 **The single most important AWS concept in Capella: cross-account `AssumeRole`.**
 The customer's data plane lives in *their* AWS account or in a Couchbase-managed
-account dedicated to them. `cp-worker` does not hold customer credentials; it
+account dedicated to them. `cp-jobs` (the worker) does not hold customer credentials; it
 assumes a role with an external-id trust policy. Read `internal/aws/v2/sts` and
 `internal/aws/v2/account` before slice 2.
 
